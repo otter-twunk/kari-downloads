@@ -79,7 +79,35 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
     {
         var sourceUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedVideoUrl(sourceUrl))
+        {
+            var fallbackTitle = CleanSearchQuery(request.Input.Title);
+            if (!string.IsNullOrWhiteSpace(fallbackTitle))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(VideoScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         var client = CreateHttpClient();
 
@@ -119,7 +147,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         ScraperRequest<string> request,
         CancellationToken ct)
     {
-        var query = request.Input?.Trim();
+        var query = CleanSearchQuery(request.Input);
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
@@ -441,15 +469,42 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         return match.Success ? match.Value : html;
     }
 
+    public static string CleanSearchQuery(string? rawQuery)
+    {
+        var cleaned = ScraperUtilities.CleanText(rawQuery);
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return string.Empty;
+
+        // Strip from ' - JustTheGays.com' and all following text to the end
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\s*[-–—]\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\s*\|\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        // Strip trailing common video media extensions if present
+        cleaned = Regex.Replace(
+            cleaned,
+            @"\.(?:mp4|m4v|mkv|mov|avi|wmv|webm|flv)$",
+            string.Empty,
+            RegexOptions.IgnoreCase);
+
+        // Strip any residual trailing dash or punctuation left after stripping
+        cleaned = Regex.Replace(cleaned, @"\s*[-–—]\s*$", string.Empty);
+
+        return ScraperUtilities.CleanText(cleaned) ?? string.Empty;
+    }
+
     private static string? CleanComTitle(string? rawTitle)
     {
-        var cleaned = ScraperUtilities.CleanText(rawTitle);
-        if (string.IsNullOrWhiteSpace(cleaned))
-            return null;
-
-        cleaned = Regex.Replace(cleaned, @"\s*[-–—]\s*JustTheGays(?:\.com)?\b.*$", string.Empty, RegexOptions.IgnoreCase);
-        cleaned = Regex.Replace(cleaned, @"\s*\|\s*Just The Gays\b.*$", string.Empty, RegexOptions.IgnoreCase);
-        return ScraperUtilities.CleanText(cleaned);
+        var cleaned = CleanSearchQuery(rawTitle);
+        return string.IsNullOrWhiteSpace(cleaned) ? null : cleaned;
     }
 
     private static string? CleanComDetails(string? rawDetails, string? title)

@@ -200,4 +200,53 @@ public sealed class JustTheGaysComScraperTests
         Assert.Equal("https://justthegays.com/wp-content/uploads/2023/04/danny-senpai.jpg", scraped.ImageUrl);
         Assert.Equal([performerUrl], scraped.Urls);
     }
+
+    [Theory]
+    [InlineData("SupremeXAlpha - RAW Pledge Train - JustTheGays.com - Hot Onlyfans and gay porn videos — justthegays.com.mp4", "SupremeXAlpha - RAW Pledge Train")]
+    [InlineData("TenInchTopXXX x Jhon Guevara - JustTheGays.com - Hot Onlyfans and gay porn videos — justthegays.com.mp4", "TenInchTopXXX x Jhon Guevara")]
+    [InlineData("SupremeXAlpha - RAW Pledge Train - JustTheGays.com", "SupremeXAlpha - RAW Pledge Train")]
+    [InlineData("SupremeXAlpha - RAW Pledge Train.mp4", "SupremeXAlpha - RAW Pledge Train")]
+    [InlineData("TenInchTopXXX x Jhon Guevara — justthegays.com - xxx", "TenInchTopXXX x Jhon Guevara")]
+    public void CleanSearchQuery_StripsTailingJustTheGaysComPhraseAndFollowing(string rawInput, string expectedOutput)
+    {
+        var cleaned = JustTheGaysComScraperExtension.CleanSearchQuery(rawInput);
+        Assert.Equal(expectedOutput, cleaned);
+    }
+
+    [Fact]
+    public async Task SearchVideosAsync_StripsTailingPhraseAndExecutesSearch()
+    {
+        const string rawQuery = "SupremeXAlpha - RAW Pledge Train - JustTheGays.com - Hot Onlyfans and gay porn videos — justthegays.com.mp4";
+        const string expectedCleanSearch = "SupremeXAlpha - RAW Pledge Train";
+        var searchApiUrl = $"https://justthegays.com/wp-json/wp/v2/search?subtype=video&per_page=20&search={Uri.EscapeDataString(expectedCleanSearch)}";
+        const string searchJson = """
+            [
+              {
+                "id": 99999,
+                "title": "SupremeXAlpha - RAW Pledge Train - JustTheGays.com",
+                "url": "https://justthegays.com/video/99999-supremexalpha-raw-pledge-train/",
+                "type": "video",
+                "subtype": "video"
+              }
+            ]
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchApiUrl, searchJson);
+
+        var extension = new JustTheGaysComScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var results = await extension.SearchVideosAsync(
+            new ScraperRequest<string>(
+                JustTheGaysComScraperExtension.VideoScraperId,
+                rawQuery,
+                new ScraperPermissions(["justthegays.com"])),
+            CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal("SupremeXAlpha - RAW Pledge Train", results[0].Title);
+        Assert.Equal("99999", results[0].Code);
+        Assert.Equal("https://justthegays.com/video/99999-supremexalpha-raw-pledge-train/", results[0].Urls[0]);
+    }
 }

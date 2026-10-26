@@ -106,7 +106,8 @@ public sealed class FakeDownloaderHost : IDownloaderHost, IDisposable
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var url = request.RequestUri?.ToString() ?? "";
-            if (routes.TryGetValue(url, out var factory))
+            var absUrl = request.RequestUri?.AbsoluteUri ?? "";
+            if (routes.TryGetValue(url, out var factory) || (!string.IsNullOrEmpty(absUrl) && routes.TryGetValue(absUrl, out factory)))
                 return Task.FromResult(factory(request));
 
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
