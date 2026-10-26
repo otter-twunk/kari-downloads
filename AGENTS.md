@@ -62,6 +62,7 @@ This automatically generates the project/manifest under `extensions/<Name>/`, li
 - **Progress Reporting**: `IDownloaderHost.ReportProgress(double progress, string? message)` expects `progress` in **`0.0` to `100.0`** (not `0.0` to `1.0`).
 - **Date Normalization**: All scraped dates (`ScrapedVideoDto.Date`, `ScrapedPerformerDto.Birthdate`, etc.) must be normalized to ISO **`yyyy-MM-dd`** (use `ScraperUtilities.NormalizeIsoDate`).
 - **Studio Fallback**: Always populate a sensible `StudioName` fallback on scraped scenes/galleries so imported items are attributable in Cove.
+- **Version Increment on Scraper Changes**: For any changes or fixes made to scrapers, always advance the version in `extension.json` by `0.0.1` (patch bump).
 - **Host-Provided Assemblies**: Never explicitly reference or copy-local `Cove.Sdk`, `Cove.Core`, `Cove.Plugins`, `Microsoft.EntityFrameworkCore*`, `Npgsql*`, or `Pgvector*` inside individual extension `.csproj` files — `Directory.Build.targets` wires them compile-only and strips them from publish output.
 
 ### Phase 4: Offline Fixture Testing
