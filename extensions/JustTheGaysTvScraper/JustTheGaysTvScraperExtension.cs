@@ -268,7 +268,12 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
                             {
                                 var thumb = TryGetJsonString(item, "thumbnailUrl");
                                 if (!string.IsNullOrWhiteSpace(thumb) && !thumb.StartsWith("http", StringComparison.OrdinalIgnoreCase))
-                                    thumb = $"https://static.jtg.network/thumbnails/{thumb.TrimStart('/')}";
+                                {
+                                    var rel = thumb.TrimStart('/');
+                                    thumb = rel.StartsWith("thumbnails/", StringComparison.OrdinalIgnoreCase)
+                                        ? $"https://static.jtg.network/{rel}"
+                                        : $"https://static.jtg.network/thumbnails/{rel}";
+                                }
 
                                 results.Add(new ScrapedVideoDto
                                 {
@@ -427,8 +432,8 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             return null;
 
         cleaned = Regex.Replace(cleaned, @"\s*\|\s*JustTheGays.*$", string.Empty, RegexOptions.IgnoreCase);
-        cleaned = Regex.Replace(cleaned, @"\s*-\s*(?:gay porn|stream amateur gay porn|[^-|]*\bPorn\b).*$", string.Empty, RegexOptions.IgnoreCase);
-        cleaned = Regex.Replace(cleaned, @"\s*-\s*JustTheGays(?:\.tv)?\s*$", string.Empty, RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s*[-–—]\s*(?:gay porn|stream amateur gay porn|[^-–—|]*\bPorn\b).*$", string.Empty, RegexOptions.IgnoreCase);
+        cleaned = Regex.Replace(cleaned, @"\s*[-–—]\s*JustTheGays(?:\.tv)?\s*$", string.Empty, RegexOptions.IgnoreCase);
         return ScraperUtilities.CleanText(cleaned);
     }
 
