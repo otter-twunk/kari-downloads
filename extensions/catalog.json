@@ -20,10 +20,28 @@
       "tagPrefix": "example-scraper/"
     },
     {
-      "name": "JustTheGaysDownloader",
-      "id": "karinauts.downloaders.just-the-gays",
-      "path": "extensions/JustTheGaysDownloader",
-      "tagPrefix": "just-the-gays-downloader/"
+      "name": "JustTheGaysTvDownloader",
+      "id": "karinauts.downloaders.just-the-gays-tv",
+      "path": "extensions/JustTheGaysTvDownloader",
+      "tagPrefix": "just-the-gays-tv-downloader/"
+    },
+    {
+      "name": "JustTheGaysComDownloader",
+      "id": "karinauts.downloaders.just-the-gays-com",
+      "path": "extensions/JustTheGaysComDownloader",
+      "tagPrefix": "just-the-gays-com-downloader/"
+    },
+    {
+      "name": "JustTheGaysTvScraper",
+      "id": "karinauts.scrapers.just-the-gays-tv",
+      "path": "extensions/JustTheGaysTvScraper",
+      "tagPrefix": "just-the-gays-tv-scraper/"
+    },
+    {
+      "name": "JustTheGaysComScraper",
+      "id": "karinauts.scrapers.just-the-gays-com",
+      "path": "extensions/JustTheGaysComScraper",
+      "tagPrefix": "just-the-gays-com-scraper/"
     }
   ]
 }

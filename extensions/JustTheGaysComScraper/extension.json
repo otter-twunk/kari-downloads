@@ -1,0 +1,32 @@
+{
+  "id": "karinauts.scrapers.just-the-gays-com",
+  "name": "JustTheGays.com Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video and performer metadata and search candidates from justthegays.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video",
+    "performer"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "JustTheGaysComScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "justthegays.com",
+      "*.justthegays.com",
+      "hr1alfri.xyz",
+      "*.hr1alfri.xyz"
+    ],
+    "scraperRuntime": [
+      "justthegays.com",
+      "*.justthegays.com",
+      "hr1alfri.xyz",
+      "*.hr1alfri.xyz"
+    ],
+    "downloaderRuntime": []
+  }
+}

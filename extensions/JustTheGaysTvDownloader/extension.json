@@ -1,8 +1,8 @@
 {
-  "id": "karinauts.downloaders.just-the-gays",
-  "name": "JustTheGays Downloader",
+  "id": "karinauts.downloaders.just-the-gays-tv",
+  "name": "JustTheGays.tv Downloader",
   "version": "0.1.0",
-  "description": "Downloads video scenes and clips with inline metadata from justthegays.tv and justthegays.com.",
+  "description": "Downloads video scenes and clips with inline metadata from justthegays.tv.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
   "categories": [
@@ -11,20 +11,16 @@
     "metadata"
   ],
   "minCoveVersion": "1.6.0",
-  "entryDll": "JustTheGaysDownloader.dll",
+  "entryDll": "JustTheGaysTvDownloader.dll",
   "dependencies": {},
   "permissions": {
     "network": [
       "justthegays.tv",
       "*.justthegays.tv",
-      "justthegays.com",
-      "*.justthegays.com",
       "gff.network",
       "*.gff.network",
       "jtg.network",
-      "*.jtg.network",
-      "hr1alfri.xyz",
-      "*.hr1alfri.xyz"
+      "*.jtg.network"
     ],
     "process": [
       "ffmpeg"
@@ -33,14 +29,10 @@
     "downloaderRuntime": [
       "justthegays.tv",
       "*.justthegays.tv",
-      "justthegays.com",
-      "*.justthegays.com",
       "gff.network",
       "*.gff.network",
       "jtg.network",
-      "*.jtg.network",
-      "hr1alfri.xyz",
-      "*.hr1alfri.xyz"
+      "*.jtg.network"
     ]
   },
   "externalDependencies": [

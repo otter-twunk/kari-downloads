@@ -28,7 +28,10 @@
     <ProjectReference Include="..\..\extensions\ExampleDownloader\ExampleDownloader.csproj" />
     <ProjectReference Include="..\..\extensions\ExampleScraper\ExampleScraper.csproj" />
     <ProjectReference Include="..\..\extensions\ExampleUi\ExampleUi.csproj" />
-        <ProjectReference Include="..\..\extensions\JustTheGaysDownloader\JustTheGaysDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\JustTheGaysTvDownloader\JustTheGaysTvDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\JustTheGaysComDownloader\JustTheGaysComDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\JustTheGaysTvScraper\JustTheGaysTvScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\JustTheGaysComScraper\JustTheGaysComScraper.csproj" />
     <!-- EXTENSION_PROJECT_REFERENCES -->
   </ItemGroup>
 

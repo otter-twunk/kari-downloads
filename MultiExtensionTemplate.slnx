@@ -1,6 +1,9 @@
 <Solution>
   <Folder Name="/extensions/">
-    <Project Path="extensions/JustTheGaysDownloader/JustTheGaysDownloader.csproj" />
+    <Project Path="extensions/JustTheGaysComScraper/JustTheGaysComScraper.csproj" />
+    <Project Path="extensions/JustTheGaysTvScraper/JustTheGaysTvScraper.csproj" />
+    <Project Path="extensions/JustTheGaysComDownloader/JustTheGaysComDownloader.csproj" />
+    <Project Path="extensions/JustTheGaysTvDownloader/JustTheGaysTvDownloader.csproj" />
     <Project Path="extensions/ExampleDownloader/ExampleDownloader.csproj" />
     <Project Path="extensions/ExampleScraper/ExampleScraper.csproj" />
     <Project Path="extensions/ExampleUi/ExampleUi.csproj" />

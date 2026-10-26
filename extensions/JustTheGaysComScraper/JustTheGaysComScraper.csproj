@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <AssemblyName>JustTheGaysDownloader</AssemblyName>
-    <RootNamespace>JustTheGaysDownloader</RootNamespace>
+    <AssemblyName>JustTheGaysComScraper</AssemblyName>
+    <RootNamespace>JustTheGaysComScraper</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

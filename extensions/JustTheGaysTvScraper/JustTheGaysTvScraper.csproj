@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>JustTheGaysTvScraper</AssemblyName>
+    <RootNamespace>JustTheGaysTvScraper</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\DownloaderUtilities.cs" Link="Shared\DownloaderUtilities.cs" />
+    <Compile Include="..\Shared\ScraperUtilities.cs" Link="Shared\ScraperUtilities.cs" />
+  </ItemGroup>
+
+</Project>

@@ -10,40 +10,21 @@ using KariDownloads.Shared;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace JustTheGaysDownloader;
+namespace JustTheGaysTvDownloader;
 
-public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloaderProvider
+public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownloaderProvider
 {
-    public const string PrimaryDownloaderId = "karinauts.downloaders.just-the-gays.video";
-    public const string StudioJustTheGaysTv = "JustTheGays";
-    public const string StudioJustTheGaysCom = "Just The Gays";
+    public const string PrimaryDownloaderId = "karinauts.downloaders.just-the-gays-tv.video";
+    public const string DefaultStudioName = "JustTheGays";
 
     private static readonly string[] SupportedDomains =
     [
         "justthegays.tv",
-        "justthegays.com",
-        "justthegays.hr1alfri.xyz",
         "cdn.gff.network"
     ];
 
-    private static readonly Regex TvSceneOrClipPathRegex = new(
+    private static readonly Regex SceneOrClipPathRegex = new(
         @"^/(?:p\d+/)?(?<kind>video|embed|clip)/(?<slug>[a-zA-Z0-9_-]+)/?$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex ComVideoPathRegex = new(
-        @"^/video/(?<slug>[a-zA-Z0-9_-]+)(?:/embed)?/?$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex ComWpJsonVideoRegex = new(
-        @"^/wp-json/wp/v2/video/(?<id>\d+)/?$",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex VideopackUrlRegex = new(
-        @"\[videopack\]\s*(?<url>https?://[^\s\[\]""'<>]+)\s*\[/videopack\]",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-    private static readonly Regex HtmlSourceTagRegex = new(
-        @"<(?:video|source)\b[^>]*\bsrc\s*=\s*['""](?<url>https?://[^'""\s<>]+\.(?:mp4|m4v|webm|m3u8)(?:\?[^'""\s<>]*)?)['""]",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex TvVideoSrcRegex = new(
@@ -62,18 +43,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         @"href\s*=\s*['""]/performer/[^'""]+['""][^>]*>(?<name>.*?)</a>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
-    private static readonly Regex ComPerformerLinkRegex = new(
-        @"href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
-
-    private static readonly Regex ComCategoryLinkRegex = new(
-        @"href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/categories/[^'""]+['""][^>]*rel\s*=\s*['""]tag['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
-
-    private static readonly Regex ComWpJsonLinkRegex = new(
-        @"<link\b[^>]+rel\s*=\s*['""]alternate['""][^>]+type\s*=\s*['""]application/json['""][^>]+href\s*=\s*['""](?<href>https?://[^'""]+/wp-json/wp/v2/video/\d+)['""]",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private static readonly Regex HlsStreamInfRegex = new(
         @"#EXT-X-STREAM-INF:(?<attrs>[^\r\n]+)\r?\n(?<uri>[^\r\n#]+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -87,18 +56,13 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
         PrimaryDownloaderId,
-        "JustTheGays Video Downloader",
+        "JustTheGays.tv Video Downloader",
         DownloaderEntity.Video,
         [
             "https://justthegays.tv/*",
             "https://*.justthegays.tv/*",
             "http://justthegays.tv/*",
             "http://*.justthegays.tv/*",
-            "https://justthegays.com/*",
-            "https://*.justthegays.com/*",
-            "http://justthegays.com/*",
-            "http://*.justthegays.com/*",
-            "https://justthegays.hr1alfri.xyz/*",
             "https://cdn.gff.network/*"
         ],
         DownloaderCapabilities.InlineMetadata | DownloaderCapabilities.MultiQuality);
@@ -129,7 +93,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             PrimaryDescriptor.Id,
             pageInfo?.PageUrl ?? normalizedUrl,
             QualityOptions: pageInfo?.QualityOptions,
-            Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(normalizedUrl, "JustTheGays Video"),
+            Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(normalizedUrl, "JustTheGays.tv Video"),
             SourceUrl: string.Equals(url, pageInfo?.PageUrl ?? normalizedUrl, StringComparison.OrdinalIgnoreCase) ? null : url);
     }
 
@@ -142,16 +106,16 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             return null;
 
         if (!IsSupportedUrl(request.Url))
-            throw new InvalidOperationException($"Unsupported URL for JustTheGays Downloader: {request.Url}");
+            throw new InvalidOperationException($"Unsupported URL for JustTheGays.tv Downloader: {request.Url}");
 
-        host.ReportProgress(5.0, "Inspecting JustTheGays media page...");
+        host.ReportProgress(5.0, "Inspecting JustTheGays.tv media page...");
         var client = CreateHttpClient(host);
         var normalizedUrl = NormalizeSupportedUrl(request.Url);
         var pageInfo = await InspectPageAsync(normalizedUrl, client, ct);
 
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Referer"] = pageInfo.IsTvSite ? "https://justthegays.tv/" : "https://justthegays.com/"
+            ["Referer"] = "https://justthegays.tv/"
         };
 
         string localPath;
@@ -182,7 +146,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         if (string.IsNullOrWhiteSpace(finalExtension))
             finalExtension = ".mp4";
 
-        var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title, "justthegays-video") + finalExtension;
+        var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title, "justthegays-tv-video") + finalExtension;
         var canonicalSourceUrl = request.SourceUrl ?? pageInfo.PageUrl;
 
         host.ReportProgress(100.0, "Completed download.");
@@ -211,7 +175,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         if (!DownloaderUtilities.IsAnyHost(uri.ToString(), SupportedDomains))
             return false;
 
-        if (DownloaderUtilities.IsHost(uri, "justthegays.hr1alfri.xyz") || DownloaderUtilities.IsHost(uri, "cdn.gff.network"))
+        if (DownloaderUtilities.IsHost(uri, "cdn.gff.network"))
         {
             return uri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
                 || uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase)
@@ -220,19 +184,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         }
 
         if (DownloaderUtilities.IsHost(uri, "justthegays.tv"))
-            return TvSceneOrClipPathRegex.IsMatch(uri.AbsolutePath);
-
-        if (DownloaderUtilities.IsHost(uri, "justthegays.com"))
-        {
-            if (ComVideoPathRegex.IsMatch(uri.AbsolutePath) || ComWpJsonVideoRegex.IsMatch(uri.AbsolutePath))
-                return true;
-
-            if (uri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            var query = uri.Query;
-            return Regex.IsMatch(query, @"(?:^\?|&)(?:p|video_id)=\d+\b", RegexOptions.IgnoreCase);
-        }
+            return SceneOrClipPathRegex.IsMatch(uri.AbsolutePath);
 
         return false;
     }
@@ -244,7 +196,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
 
         if (DownloaderUtilities.IsHost(uri, "justthegays.tv"))
         {
-            var match = TvSceneOrClipPathRegex.Match(uri.AbsolutePath);
+            var match = SceneOrClipPathRegex.Match(uri.AbsolutePath);
             if (match.Success)
             {
                 var kind = match.Groups["kind"].Value.ToLowerInvariant();
@@ -254,15 +206,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
                 if (kind == "clip")
                     return $"https://justthegays.tv/clip/{slug}";
                 return $"https://justthegays.tv/video/{slug}";
-            }
-        }
-        else if (DownloaderUtilities.IsHost(uri, "justthegays.com"))
-        {
-            var match = ComVideoPathRegex.Match(uri.AbsolutePath);
-            if (match.Success)
-            {
-                var slug = match.Groups["slug"].Value;
-                return $"https://justthegays.com/video/{slug}/";
             }
         }
 
@@ -285,21 +228,16 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
     {
         var uri = new Uri(url);
 
-        // Direct media stream URL (.mp4 / .m3u8)
-        if (DownloaderUtilities.IsHost(uri, "justthegays.hr1alfri.xyz")
-            || DownloaderUtilities.IsHost(uri, "cdn.gff.network")
+        if (DownloaderUtilities.IsHost(uri, "cdn.gff.network")
             || uri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
             || uri.AbsolutePath.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase))
         {
-            var isTvCdn = DownloaderUtilities.IsHost(uri, "cdn.gff.network") || DownloaderUtilities.IsHost(uri, "justthegays.tv");
-            var studio = isTvCdn ? StudioJustTheGaysTv : StudioJustTheGaysCom;
-            var fallbackTitle = DownloaderUtilities.DeriveTitleFromUrl(url, studio);
+            var fallbackTitle = DownloaderUtilities.DeriveTitleFromUrl(url, DefaultStudioName);
             return new ResolvedMediaPage(
                 PageUrl: url,
                 Title: fallbackTitle,
                 MediaUrl: url,
-                StudioName: studio,
-                IsTvSite: isTvCdn,
+                StudioName: DefaultStudioName,
                 Code: null,
                 Date: null,
                 Description: null,
@@ -309,32 +247,8 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
                 QualityOptions: null);
         }
 
-        if (DownloaderUtilities.IsHost(uri, "justthegays.tv"))
-        {
-            var html = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
-            return ParseJustTheGaysTvHtml(html, url);
-        }
-
-        if (ComWpJsonVideoRegex.IsMatch(uri.AbsolutePath))
-        {
-            var json = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
-            return ParseJustTheGaysComWpJson(json, url);
-        }
-
-        var comHtml = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
-        var parsedCom = ParseJustTheGaysComHtml(comHtml, url, allowMissingMedia: true);
-        if (!string.IsNullOrWhiteSpace(parsedCom.MediaUrl))
-            return parsedCom;
-
-        // Fallback to WordPress REST API if the HTML did not include the direct <source> tag
-        var wpApiUrl = ExtractComWpJsonUrl(comHtml, url);
-        if (!string.IsNullOrWhiteSpace(wpApiUrl))
-        {
-            var apiJson = await ScraperUtilities.FetchHtmlAsync(client, wpApiUrl, ct);
-            return MergeComHtmlAndWpJson(parsedCom, ParseJustTheGaysComWpJson(apiJson, url));
-        }
-
-        throw new InvalidOperationException($"Could not locate a media stream on {url}");
+        var html = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
+        return ParseJustTheGaysTvHtml(html, url);
     }
 
     internal static ResolvedMediaPage ParseJustTheGaysTvHtml(string html, string pageUrl)
@@ -362,7 +276,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             }
         }
 
-        // Inspect SvelteKit bootstrap data for videoSrc, categories, performers, and quality flags
         var has720P = false;
         var has1080P = false;
         var bootstrapMatch = TvBootstrapVideoRegex.Match(html);
@@ -414,7 +327,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             performers.Add(perfMatch.Groups["name"].Value);
 
         title ??= CleanTvTitle(DownloaderUtilities.ExtractHtmlTitle(html))
-            ?? DownloaderUtilities.DeriveTitleFromUrl(pageUrl, StudioJustTheGaysTv);
+            ?? DownloaderUtilities.DeriveTitleFromUrl(pageUrl, DefaultStudioName);
 
         description ??= DownloaderUtilities.ExtractMetaContent(html, "og:description")
             ?? DownloaderUtilities.ExtractMetaContent(html, "description");
@@ -430,10 +343,9 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
 
         return new ResolvedMediaPage(
             PageUrl: pageUrl,
-            Title: CleanTvTitle(title) ?? "JustTheGays Video",
+            Title: CleanTvTitle(title) ?? "JustTheGays.tv Video",
             MediaUrl: mediaUrl,
-            StudioName: StudioJustTheGaysTv,
-            IsTvSite: true,
+            StudioName: DefaultStudioName,
             Code: code,
             Date: date,
             Description: cleanedDescription,
@@ -441,138 +353,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             PerformerNames: ScraperUtilities.DeduplicateStrings(performers),
             TagNames: ScraperUtilities.DeduplicateStrings(tags),
             QualityOptions: qualityOptions);
-    }
-
-    internal static ResolvedMediaPage ParseJustTheGaysComHtml(string html, string pageUrl, bool allowMissingMedia = false)
-    {
-        // Scope to the primary article when present so related video cards on the page are ignored
-        var articleHtml = ExtractPrimaryArticleHtml(html);
-
-        var rawTitle = DownloaderUtilities.ExtractFirstMatch(articleHtml, @"(?is)<h1[^>]*>(.*?)</h1>")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "og:title")
-            ?? DownloaderUtilities.ExtractHtmlTitle(html);
-
-        var title = CleanComTitle(rawTitle)
-            ?? DownloaderUtilities.DeriveTitleFromUrl(pageUrl, StudioJustTheGaysCom);
-
-        var rawDate = DownloaderUtilities.ExtractFirstRawMatch(articleHtml, @"(?is)<time\b[^>]*datetime\s*=\s*['""]([^'""]+)['""]")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "article:published_time")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "og:updated_time");
-        var date = ScraperUtilities.NormalizeIsoDate(rawDate);
-
-        var rawDetails = DownloaderUtilities.ExtractFirstMatch(articleHtml, @"(?is)<div\b[^>]*class\s*=\s*['""][^'""]*\b(?:post-content|entry-content)\b[^'""]*['""][^>]*>.*?<p>(.*?)</p>")
-            ?? DownloaderUtilities.ExtractFirstMatch(articleHtml, @"(?is)<div\b[^>]*class\s*=\s*['""][^'""]*\b(?:post-content|entry-content)\b[^'""]*['""][^>]*>(.*?)</div>")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "og:description")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "description");
-
-        var performers = new List<string>();
-        foreach (Match match in ComPerformerLinkRegex.Matches(articleHtml))
-            performers.Add(match.Groups["name"].Value);
-
-        var tags = new List<string>();
-        foreach (Match match in ComCategoryLinkRegex.Matches(articleHtml))
-            tags.Add(match.Groups["name"].Value);
-
-        if (performers.Count == 0 && !string.IsNullOrWhiteSpace(rawDetails))
-            performers.AddRange(InferComPerformersFromDetails(rawDetails));
-
-        if (tags.Count == 0 && !string.IsNullOrWhiteSpace(rawDetails))
-            tags.AddRange(InferComCategoriesFromDetails(rawDetails));
-
-        var cleanedDetails = CleanComDetails(rawDetails, title);
-        var imageUrl = DownloaderUtilities.ExtractMetaContent(html, "og:image")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "twitter:image");
-
-        var mediaUrl = ExtractGenericMediaUrl(articleHtml, pageUrl)
-            ?? ExtractGenericMediaUrl(html, pageUrl);
-
-        if (string.IsNullOrWhiteSpace(mediaUrl) && !allowMissingMedia)
-            throw new InvalidOperationException($"Could not locate a direct video stream on {pageUrl}");
-
-        return new ResolvedMediaPage(
-            PageUrl: pageUrl,
-            Title: title,
-            MediaUrl: mediaUrl ?? string.Empty,
-            StudioName: StudioJustTheGaysCom,
-            IsTvSite: false,
-            Code: ExtractComCode(pageUrl, html),
-            Date: date,
-            Description: cleanedDetails,
-            ImageUrl: imageUrl,
-            PerformerNames: ScraperUtilities.DeduplicateStrings(performers),
-            TagNames: ScraperUtilities.DeduplicateStrings(tags),
-            QualityOptions: null);
-    }
-
-    internal static ResolvedMediaPage ParseJustTheGaysComWpJson(string json, string fallbackPageUrl)
-    {
-        using var doc = JsonDocument.Parse(json);
-        var root = doc.RootElement;
-        if (root.ValueKind == JsonValueKind.Array)
-        {
-            if (root.GetArrayLength() == 0)
-                throw new InvalidOperationException($"Empty WordPress video response for {fallbackPageUrl}");
-            root = root[0];
-        }
-
-        var pageUrl = TryGetJsonString(root, "link") ?? fallbackPageUrl;
-        var rawTitle = TryGetRenderedText(root, "title");
-        var title = CleanComTitle(rawTitle)
-            ?? DownloaderUtilities.DeriveTitleFromUrl(pageUrl, StudioJustTheGaysCom);
-
-        var date = ScraperUtilities.NormalizeIsoDate(TryGetJsonString(root, "date") ?? TryGetJsonString(root, "date_gmt"));
-        var rawContent = TryGetRenderedText(root, "content") ?? TryGetRenderedText(root, "excerpt");
-
-        var performers = new List<string>();
-        var tags = new List<string>();
-
-        if (root.TryGetProperty("class_list", out var classList) && classList.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in classList.EnumerateArray())
-            {
-                if (item.ValueKind != JsonValueKind.String)
-                    continue;
-                var cls = item.GetString() ?? string.Empty;
-                if (cls.StartsWith("categories-", StringComparison.OrdinalIgnoreCase))
-                    tags.Add(FormatComTaxonomySlug(cls["categories-".Length..]));
-                else if (cls.StartsWith("video_tag-", StringComparison.OrdinalIgnoreCase))
-                    performers.Add(FormatComTaxonomySlug(cls["video_tag-".Length..]));
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(rawContent))
-        {
-            var plainContent = ScraperUtilities.CleanText(rawContent) ?? string.Empty;
-            if (performers.Count == 0)
-                performers.AddRange(InferComPerformersFromDetails(plainContent));
-            if (tags.Count == 0)
-                tags.AddRange(InferComCategoriesFromDetails(plainContent));
-        }
-
-        var cleanedDetails = CleanComDetails(rawContent, title);
-        var playbacks = TryGetJsonString(root, "playbacks") ?? string.Empty;
-        var mediaUrl = ExtractMediaUrlFromPlaybacks(playbacks)
-            ?? ExtractGenericMediaUrl(rawContent ?? string.Empty, pageUrl)
-            ?? throw new InvalidOperationException($"WordPress video payload did not contain a playback URL for {pageUrl}");
-
-        string? code = null;
-        if (root.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.Number)
-            code = idProp.GetInt64().ToString(CultureInfo.InvariantCulture);
-        code ??= ExtractComCode(pageUrl, null);
-
-        return new ResolvedMediaPage(
-            PageUrl: pageUrl,
-            Title: title,
-            MediaUrl: mediaUrl,
-            StudioName: StudioJustTheGaysCom,
-            IsTvSite: false,
-            Code: code,
-            Date: date,
-            Description: cleanedDetails,
-            ImageUrl: null,
-            PerformerNames: ScraperUtilities.DeduplicateStrings(performers),
-            TagNames: ScraperUtilities.DeduplicateStrings(tags),
-            QualityOptions: null);
     }
 
     private async Task<string> DownloadHlsStreamAsync(
@@ -589,7 +369,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         var manifestText = await ScraperUtilities.FetchHtmlAsync(client, m3u8Url, ct, headers);
         var activePlaylistUrl = m3u8Url;
 
-        // If this is a master playlist (#EXT-X-STREAM-INF), select the best variant matching request quality/maxHeight
         if (manifestText.Contains("#EXT-X-STREAM-INF", StringComparison.OrdinalIgnoreCase))
         {
             var variantUrl = SelectHlsVariantUrl(manifestText, m3u8Url, request.QualityId, request.MaxHeight);
@@ -741,7 +520,7 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         try
         {
             var configuredFfmpeg = _configuration?["ffmpegPath"]
-                ?? _configuration?["Extensions:karinauts.downloaders.just-the-gays:ffmpegPath"];
+                ?? _configuration?["Extensions:karinauts.downloaders.just-the-gays-tv:ffmpegPath"];
             var ffmpegBinary = string.IsNullOrWhiteSpace(configuredFfmpeg) ? "ffmpeg" : configuredFfmpeg.Trim();
 
             host.ReportProgress(95.0, "Remuxing HLS transport stream to MP4...");
@@ -856,84 +635,11 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
 
     private static string? ExtractGenericMediaUrl(string html, string pageUrl)
     {
-        var playbacksUrl = ExtractMediaUrlFromPlaybacks(html);
-        if (!string.IsNullOrWhiteSpace(playbacksUrl))
-            return playbacksUrl;
-
-        var sourceMatch = HtmlSourceTagRegex.Match(html);
-        if (sourceMatch.Success)
-            return WebUtility.HtmlDecode(sourceMatch.Groups["url"].Value).Trim();
-
-        foreach (var metaProp in new[] { "og:video:secure_url", "og:video:url", "og:video" })
-        {
-            var metaVal = DownloaderUtilities.ExtractMetaContent(html, metaProp);
-            if (!string.IsNullOrWhiteSpace(metaVal)
-                && Regex.IsMatch(metaVal, @"\.(?:mp4|m4v|webm|m3u8)(?:\?|$)", RegexOptions.IgnoreCase))
-            {
-                return ResolveUrl(metaVal, pageUrl);
-            }
-        }
-
         var rawMp4 = DownloaderUtilities.ExtractFirstRawMatch(
             html,
             @"(https?://[^'""<>\s\\]+\.(?:mp4|m4v|m3u8)(?:\?[^'""<>\s\\]+)?)");
 
         return string.IsNullOrWhiteSpace(rawMp4) ? null : WebUtility.HtmlDecode(rawMp4).Trim();
-    }
-
-    private static string? ExtractMediaUrlFromPlaybacks(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        var normalized = text.Replace(@"\/", "/");
-        var match = VideopackUrlRegex.Match(normalized);
-        if (match.Success)
-            return WebUtility.HtmlDecode(match.Groups["url"].Value).Trim();
-
-        return null;
-    }
-
-    private static string? ExtractComWpJsonUrl(string html, string pageUrl)
-    {
-        var linkMatch = ComWpJsonLinkRegex.Match(html);
-        if (linkMatch.Success)
-            return WebUtility.HtmlDecode(linkMatch.Groups["href"].Value).Trim();
-
-        if (Uri.TryCreate(pageUrl, UriKind.Absolute, out var uri))
-        {
-            var pathMatch = ComVideoPathRegex.Match(uri.AbsolutePath);
-            if (pathMatch.Success)
-            {
-                var slug = pathMatch.Groups["slug"].Value;
-                return $"https://justthegays.com/wp-json/wp/v2/video?slug={Uri.EscapeDataString(slug)}";
-            }
-        }
-
-        return null;
-    }
-
-    private static ResolvedMediaPage MergeComHtmlAndWpJson(ResolvedMediaPage htmlPage, ResolvedMediaPage apiPage)
-    {
-        return new ResolvedMediaPage(
-            PageUrl: htmlPage.PageUrl,
-            Title: !string.IsNullOrWhiteSpace(apiPage.Title) ? apiPage.Title : htmlPage.Title,
-            MediaUrl: !string.IsNullOrWhiteSpace(htmlPage.MediaUrl) ? htmlPage.MediaUrl : apiPage.MediaUrl,
-            StudioName: StudioJustTheGaysCom,
-            IsTvSite: false,
-            Code: htmlPage.Code ?? apiPage.Code,
-            Date: htmlPage.Date ?? apiPage.Date,
-            Description: !string.IsNullOrWhiteSpace(htmlPage.Description) ? htmlPage.Description : apiPage.Description,
-            ImageUrl: htmlPage.ImageUrl ?? apiPage.ImageUrl,
-            PerformerNames: htmlPage.PerformerNames.Count > 0 ? htmlPage.PerformerNames : apiPage.PerformerNames,
-            TagNames: htmlPage.TagNames.Count > 0 ? htmlPage.TagNames : apiPage.TagNames,
-            QualityOptions: null);
-    }
-
-    private static string ExtractPrimaryArticleHtml(string html)
-    {
-        var match = Regex.Match(html, @"(?is)<article\b[^>]*>.*?</article>");
-        return match.Success ? match.Value : html;
     }
 
     private static string? CleanTvTitle(string? rawTitle)
@@ -945,17 +651,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         cleaned = Regex.Replace(cleaned, @"\s*\|\s*JustTheGays.*$", string.Empty, RegexOptions.IgnoreCase);
         cleaned = Regex.Replace(cleaned, @"\s*-\s*(?:gay porn|stream amateur gay porn|[^-|]*\bPorn\b).*$", string.Empty, RegexOptions.IgnoreCase);
         cleaned = Regex.Replace(cleaned, @"\s*-\s*JustTheGays(?:\.tv)?\s*$", string.Empty, RegexOptions.IgnoreCase);
-        return ScraperUtilities.CleanText(cleaned);
-    }
-
-    private static string? CleanComTitle(string? rawTitle)
-    {
-        var cleaned = ScraperUtilities.CleanText(rawTitle);
-        if (string.IsNullOrWhiteSpace(cleaned))
-            return null;
-
-        cleaned = Regex.Replace(cleaned, @"\s*-\s*JustTheGays(?:\.com)?\b.*$", string.Empty, RegexOptions.IgnoreCase);
-        cleaned = Regex.Replace(cleaned, @"\s*\|\s*Just The Gays\b.*$", string.Empty, RegexOptions.IgnoreCase);
         return ScraperUtilities.CleanText(cleaned);
     }
 
@@ -972,81 +667,12 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         return ScraperUtilities.CleanText(text);
     }
 
-    private static string? CleanComDetails(string? rawDetails, string? title)
-    {
-        var text = ScraperUtilities.CleanText(rawDetails);
-        if (string.IsNullOrWhiteSpace(text))
-            return null;
-
-        if (!string.IsNullOrWhiteSpace(title))
-        {
-            var escapedTitle = Regex.Escape(title);
-            text = Regex.Replace(
-                text,
-                $@"^{escapedTitle}\s*[–-]\s*JustTheGays(?:\.com)?\s*(?:\|\s*Just The Gays\s*)?[–-]\s*",
-                string.Empty,
-                RegexOptions.IgnoreCase);
-        }
-
-        text = Regex.Replace(
-            text,
-            @"\s*(?:-\s*JustTheGays\s*-\s*)?Jerk to the hottest and best gay porn and sex videos.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-        text = Regex.Replace(
-            text,
-            @"\s*Stream the hottest and newest gay porn videos for free.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-        text = Regex.Replace(
-            text,
-            @"\s*Endless hours of gay xxx videos.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-
-        return ScraperUtilities.CleanText(text);
-    }
-
-    private static IReadOnlyList<string> InferComPerformersFromDetails(string details)
-    {
-        var match = Regex.Match(
-            details,
-            @"\bJerk to hot gay porn from (?<names>.*?)(?:\.| Thousands of hours)",
-            RegexOptions.IgnoreCase);
-
-        if (!match.Success)
-            return [];
-
-        var parts = Regex.Split(match.Groups["names"].Value, @",|&|\band\b", RegexOptions.IgnoreCase);
-        return ScraperUtilities.DeduplicateStrings(parts);
-    }
-
-    private static IReadOnlyList<string> InferComCategoriesFromDetails(string details)
-    {
-        var match = Regex.Match(
-            details,
-            @"Thousands of hours of amateur (?<cats>.*?) videos",
-            RegexOptions.IgnoreCase);
-
-        if (!match.Success)
-            return [];
-
-        return ScraperUtilities.DeduplicateStrings(match.Groups["cats"].Value.Split(','));
-    }
-
-    private static string FormatComTaxonomySlug(string slug)
-    {
-        var withoutNumericSuffix = Regex.Replace(slug, @"-\d{4,}$", string.Empty);
-        var words = withoutNumericSuffix.Split('-', StringSplitOptions.RemoveEmptyEntries);
-        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(string.Join(' ', words));
-    }
-
     private static string? ExtractTvCode(string pageUrl)
     {
         if (!Uri.TryCreate(pageUrl, UriKind.Absolute, out var uri))
             return null;
 
-        var match = TvSceneOrClipPathRegex.Match(uri.AbsolutePath);
+        var match = SceneOrClipPathRegex.Match(uri.AbsolutePath);
         if (!match.Success)
             return null;
 
@@ -1057,38 +683,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
 
         var suffixMatch = Regex.Match(slug, @"-([a-z0-9]{2,8})$", RegexOptions.IgnoreCase);
         return suffixMatch.Success ? suffixMatch.Groups[1].Value : slug;
-    }
-
-    private static string? ExtractComCode(string pageUrl, string? html)
-    {
-        if (Uri.TryCreate(pageUrl, UriKind.Absolute, out var uri))
-        {
-            var pathMatch = ComVideoPathRegex.Match(uri.AbsolutePath);
-            if (pathMatch.Success)
-            {
-                var slug = pathMatch.Groups["slug"].Value;
-                var leadingId = Regex.Match(slug, @"^(\d+)-");
-                if (leadingId.Success)
-                    return leadingId.Groups[1].Value;
-            }
-        }
-
-        if (!string.IsNullOrWhiteSpace(html))
-        {
-            var postIdMatch = Regex.Match(html, @"\bpost-(?<id>\d+)\b");
-            if (postIdMatch.Success)
-                return postIdMatch.Groups["id"].Value;
-
-            var apiMatch = ComWpJsonLinkRegex.Match(html);
-            if (apiMatch.Success)
-            {
-                var idMatch = Regex.Match(apiMatch.Groups["href"].Value, @"/video/(?<id>\d+)");
-                if (idMatch.Success)
-                    return idMatch.Groups["id"].Value;
-            }
-        }
-
-        return null;
     }
 
     private static string? ExtractJsStringProperty(string jsObjectText, string propertyName)
@@ -1108,27 +702,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
             return prop.GetString();
         }
 
-        return null;
-    }
-
-    private static string? TryGetRenderedText(JsonElement element, string propertyName)
-    {
-        if (element.ValueKind == JsonValueKind.Object
-            && element.TryGetProperty(propertyName, out var prop)
-            && prop.ValueKind == JsonValueKind.Object)
-        {
-            return TryGetJsonString(prop, "rendered");
-        }
-
-        return null;
-    }
-
-    private static string? ResolveUrl(string candidate, string baseUrl)
-    {
-        if (Uri.TryCreate(candidate, UriKind.Absolute, out var absolute))
-            return absolute.ToString();
-        if (Uri.TryCreate(new Uri(baseUrl), candidate, out var relative))
-            return relative.ToString();
         return null;
     }
 
@@ -1152,7 +725,6 @@ public sealed class JustTheGaysDownloaderExtension : CoveExtensionBase, IDownloa
         string Title,
         string MediaUrl,
         string StudioName,
-        bool IsTvSite,
         string? Code,
         string? Date,
         string? Description,
