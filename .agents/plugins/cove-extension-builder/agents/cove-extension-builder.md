@@ -66,6 +66,7 @@ node scripts/new-extension.mjs \
 - Implement the extension in `extensions/<Name>/<Name>Extension.cs` (or `extensions/<Name>/scrapers/<Site>.yml`).
 - Leverage `KariDownloads.Shared.DownloaderUtilities` and `KariDownloads.Shared.ScraperUtilities` (`extensions/Shared/`).
 - Keep `extension.json` as the single source of truth for metadata (`id`, `name`, `version`, `description`, `author`, `url`, `categories`, `minCoveVersion`, `entryDll`, `permissions`, `settings`, `externalDependencies`). Never redeclare metadata properties on `CoveExtensionBase` subclasses.
+- **Patch Version Bump on Every Release**: All extensions (downloaders, scrapers, UI, etc.) must receive a patch bump (`0.0.1`, e.g. `0.1.0` -> `0.1.1`) in `extension.json` whenever changes are made and a new release is created.
 
 ### Phase 4: Offline Fixture Unit Testing
 - Add realistic, sanitized HTML/JSON fixtures into `tests/KariDownloads.Tests/<Name>Tests.cs` using `FakeDownloaderHost` (`MapHtml`, `MapJson`, `MapBytes`).

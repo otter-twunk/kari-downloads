@@ -62,7 +62,7 @@ This automatically generates the project/manifest under `extensions/<Name>/`, li
 - **Progress Reporting**: `IDownloaderHost.ReportProgress(double progress, string? message)` expects `progress` in **`0.0` to `100.0`** (not `0.0` to `1.0`).
 - **Date Normalization**: All scraped dates (`ScrapedVideoDto.Date`, `ScrapedPerformerDto.Birthdate`, etc.) must be normalized to ISO **`yyyy-MM-dd`** (use `ScraperUtilities.NormalizeIsoDate`).
 - **Studio Fallback**: Always populate a sensible `StudioName` fallback on scraped scenes/galleries so imported items are attributable in Cove.
-- **Version Increment on Scraper Changes**: For any changes or fixes made to scrapers, always advance the version in `extension.json` by `0.0.1` (patch bump).
+- **Patch Version Bump on Every Release**: All extensions (downloaders, scrapers, UI, etc.) must receive a patch bump (`0.0.1`, e.g. `0.1.0` -> `0.1.1`) in `extension.json` whenever changes are made and a new release is created.
 - **Host-Provided Assemblies**: Never explicitly reference or copy-local `Cove.Sdk`, `Cove.Core`, `Cove.Plugins`, `Microsoft.EntityFrameworkCore*`, `Npgsql*`, or `Pgvector*` inside individual extension `.csproj` files — `Directory.Build.targets` wires them compile-only and strips them from publish output.
 
 ### Phase 4: Offline Fixture Testing
@@ -127,5 +127,6 @@ kari-downloads/
 ## 3. Release & Deployment Rules
 
 - **Never push or tag a release without Kari's explicit approval.**
-- Release tags follow `<tagPrefix>v< MAJOR.MINOR.PATCH >` (e.g., `my-downloader/v0.1.0`), where `tagPrefix` matches `extensions/catalog.json`.
+- **Patch Version Bump on Every Release**: Every modified extension (downloaders, scrapers, UI, etc.) must receive a patch bump (`0.0.1`) in `extension.json` when a new release is prepared.
+- Release tags follow `<tagPrefix>v< MAJOR.MINOR.PATCH >` (e.g., `my-downloader/v0.1.1`), where `tagPrefix` matches `extensions/catalog.json` and the version matches the bumped `version` in `extension.json`.
 - Pushing a matching tag triggers `.github/workflows/build.yml` to build, package, and attach `<id>-<version>.zip` to a GitHub Release, which can be installed in Cove via **Extensions › Install from URL**.
