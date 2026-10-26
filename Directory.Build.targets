@@ -60,4 +60,13 @@
     </ItemGroup>
   </Target>
 
+  <Target Name="CoveCopyUiBundleAfterClean" AfterTargets="IncrementalClean"
+          Condition="Exists('$(MSBuildProjectDirectory)\extension.json') and Exists('$(MSBuildProjectDirectory)\dist')">
+    <ItemGroup>
+      <_CoveUiBundleFile Include="$(MSBuildProjectDirectory)\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_CoveUiBundleFile)"
+          DestinationFiles="@(_CoveUiBundleFile->'$(OutDir)dist\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+
 </Project>

@@ -122,6 +122,10 @@ jobs:
         if: steps.check.outputs.match == 'true'
         run: cp ${{ matrix.extension.path }}/extension.json artifacts/${{ matrix.extension.name }}/
 
+      - name: Copy content-only payload
+        if: steps.check.outputs.match == 'true' && matrix.extension.contentOnly
+        run: cp -R ${{ matrix.extension.path }}/scrapers artifacts/${{ matrix.extension.name }}/
+
       - name: Stamp packaged extension.json version
         if: steps.check.outputs.match == 'true'
         run: |

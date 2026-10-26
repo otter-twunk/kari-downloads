@@ -18,6 +18,12 @@
       "id": "com.example.scraper",
       "path": "extensions/ExampleScraper",
       "tagPrefix": "example-scraper/"
+    },
+    {
+      "name": "JustTheGaysDownloader",
+      "id": "karinauts.downloaders.just-the-gays",
+      "path": "extensions/JustTheGaysDownloader",
+      "tagPrefix": "just-the-gays-downloader/"
     }
   ]
 }

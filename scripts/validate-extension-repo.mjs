@@ -8,7 +8,7 @@ const buildPropsPath = path.join(root, "Directory.Build.props");
 const errors = [];
 
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^﻿/, ""));
+  return JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
 }
 
 function isLowerKebab(value) {
@@ -109,6 +109,34 @@ function validateSettings(extensionId, manifest) {
   }
 }
 
+function validateScraperPack(extensionId, extensionDir, entry, manifest) {
+  if (manifest.kind !== "scraper-pack") return;
+
+  if (!entry.contentOnly) {
+    errors.push(`${extensionId}: scraper-pack catalog entry must set contentOnly: true`);
+  }
+  if (!Array.isArray(manifest.scraperFiles) || manifest.scraperFiles.length === 0) {
+    errors.push(`${extensionId}: scraper-pack extension.json must declare a non-empty scraperFiles array`);
+    return;
+  }
+
+  for (const relativeFile of manifest.scraperFiles) {
+    const fullPath = path.join(extensionDir, relativeFile);
+    if (!fs.existsSync(fullPath)) {
+      errors.push(`${extensionId}: scraperFile does not exist: ${relativeFile}`);
+      continue;
+    }
+
+    const content = fs.readFileSync(fullPath, "utf8");
+    if (/^\s*action\s*:\s*script\b/m.test(content)) {
+      errors.push(`${extensionId}: ${relativeFile} uses forbidden 'action: script' (blocked by Cove native YAML engine)`);
+    }
+    if (/^\s*subScraper\s*:/m.test(content)) {
+      errors.push(`${extensionId}: ${relativeFile} uses unsupported 'subScraper' postProcess`);
+    }
+  }
+}
+
 const catalog = readJson(catalogPath);
 const entries = Array.isArray(catalog.extensions) ? catalog.extensions : [];
 const buildProps = readMsBuildProperties(buildPropsPath);
@@ -172,6 +200,7 @@ for (const entry of entries) {
 
   validateExternalDependencies(entry.id, manifest);
   validateSettings(entry.id, manifest);
+  validateScraperPack(entry.id, extensionDir, entry, manifest);
 }
 
 if (errors.length > 0) {

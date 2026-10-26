@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>KariDownloads.Tests</AssemblyName>
+    <RootNamespace>KariDownloads.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\extensions\Shared\DownloaderUtilities.cs" Link="Shared\DownloaderUtilities.cs" />
+    <Compile Include="..\..\extensions\Shared\ScraperUtilities.cs" Link="Shared\ScraperUtilities.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\extensions\ExampleDownloader\ExampleDownloader.csproj" />
+    <ProjectReference Include="..\..\extensions\ExampleScraper\ExampleScraper.csproj" />
+    <ProjectReference Include="..\..\extensions\ExampleUi\ExampleUi.csproj" />
+        <ProjectReference Include="..\..\extensions\JustTheGaysDownloader\JustTheGaysDownloader.csproj" />
+    <!-- EXTENSION_PROJECT_REFERENCES -->
+  </ItemGroup>
+
+  <!-- This test project has no extension.json, so Directory.Build.targets does not strip Cove host contracts;
+       reference them copy-local so xUnit has them at runtime. -->
+  <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true'">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalCoveSource)' != 'true'">
+    <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalCoveCore)' == 'true'">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Core\Cove.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseLocalCoveCore)' != 'true'">
+    <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
+  </ItemGroup>
+</Project>

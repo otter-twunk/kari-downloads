@@ -1,0 +1,11 @@
+{
+  "name": "cove-extension-builder",
+  "displayName": "Cove Extension Builder",
+  "version": "1.0.0",
+  "description": "Autonomous agent and skill suite for creating, testing, and packaging Cove downloaders (IDownloaderProvider) and metadata scrapers (IScraperProvider / YAML scraper-packs) in kari-downloads.",
+  "suggestedPrompts": [
+    "Create a Cove video downloader and scraper for example.com",
+    "Build a multi-quality downloader extension for a site with inline metadata",
+    "Scaffold and test a new Cove metadata scraper from a sample URL"
+  ]
+}

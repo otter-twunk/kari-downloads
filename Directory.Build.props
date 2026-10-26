@@ -5,8 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <CoveMinVersion Condition="'$(CoveMinVersion)' == ''">0.7.1</CoveMinVersion>
-    <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">$(CoveMinVersion)</CoveSdkVersion>
-    <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">$(CoveMinVersion)</CoveCoreVersion>
+    <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">1.7.0</CoveSdkVersion>
+    <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">1.7.0</CoveCoreVersion>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">true</UseLocalCoveSource>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == ''">false</UseLocalCoveSource>
     <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Core\Cove.Core.csproj')">true</UseLocalCoveCore>

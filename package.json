@@ -1,0 +1,13 @@
+{
+  "name": "kari-downloads",
+  "private": true,
+  "description": "Autonomous Cove downloaders and scrapers extension repository",
+  "scripts": {
+    "validate": "node scripts/validate-extension-repo.mjs",
+    "new": "node scripts/new-extension.mjs",
+    "build": "dotnet build MultiExtensionTemplate.slnx -c Release",
+    "test": "dotnet test MultiExtensionTemplate.slnx -c Release",
+    "package": "node scripts/package-extension.mjs",
+    "verify": "node scripts/validate-extension-repo.mjs && dotnet test MultiExtensionTemplate.slnx -c Release && node scripts/package-extension.mjs"
+  }
+}

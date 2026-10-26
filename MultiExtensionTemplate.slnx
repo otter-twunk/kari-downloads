@@ -1,7 +1,11 @@
 <Solution>
   <Folder Name="/extensions/">
+    <Project Path="extensions/JustTheGaysDownloader/JustTheGaysDownloader.csproj" />
     <Project Path="extensions/ExampleDownloader/ExampleDownloader.csproj" />
     <Project Path="extensions/ExampleScraper/ExampleScraper.csproj" />
     <Project Path="extensions/ExampleUi/ExampleUi.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/KariDownloads.Tests/KariDownloads.Tests.csproj" />
   </Folder>
 </Solution>
