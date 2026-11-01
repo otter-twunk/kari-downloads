@@ -6,8 +6,12 @@
     "validate": "node scripts/validate-extension-repo.mjs",
     "new": "node scripts/new-extension.mjs",
     "build": "dotnet build MultiExtensionTemplate.slnx -c Release",
+    "build:ui": "node scripts/build-extension-ui.mjs",
     "test": "dotnet test MultiExtensionTemplate.slnx -c Release",
-    "package": "node scripts/package-extension.mjs",
-    "verify": "node scripts/validate-extension-repo.mjs && dotnet test MultiExtensionTemplate.slnx -c Release && node scripts/package-extension.mjs"
+    "package": "node scripts/build-extension-ui.mjs && node scripts/package-extension.mjs",
+    "verify": "node scripts/validate-extension-repo.mjs && node scripts/build-extension-ui.mjs && dotnet test MultiExtensionTemplate.slnx -c Release && node scripts/package-extension.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
   }
 }

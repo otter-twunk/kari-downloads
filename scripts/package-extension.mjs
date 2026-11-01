@@ -68,6 +68,9 @@ for (const entry of entries) {
   }
 
   fs.copyFileSync(manifestPath, path.join(publishDir, "extension.json"));
+  if (fs.existsSync(path.join(extDir, "dist"))) {
+    fs.cpSync(path.join(extDir, "dist"), path.join(publishDir, "dist"), { recursive: true });
+  }
   if (entry.contentOnly && fs.existsSync(path.join(extDir, "scrapers"))) {
     fs.cpSync(path.join(extDir, "scrapers"), path.join(publishDir, "scrapers"), { recursive: true });
   }

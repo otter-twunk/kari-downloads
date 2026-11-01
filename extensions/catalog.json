@@ -42,6 +42,12 @@
       "id": "karinauts.scrapers.just-the-gays-com",
       "path": "extensions/JustTheGaysComScraper",
       "tagPrefix": "just-the-gays-com-scraper/"
+    },
+    {
+      "name": "BatchDownloader",
+      "id": "karinauts.tools.batch-downloader",
+      "path": "extensions/BatchDownloader",
+      "tagPrefix": "batch-downloader/"
     }
   ]
 }

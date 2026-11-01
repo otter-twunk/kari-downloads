@@ -32,6 +32,7 @@
         <ProjectReference Include="..\..\extensions\JustTheGaysComDownloader\JustTheGaysComDownloader.csproj" />
         <ProjectReference Include="..\..\extensions\JustTheGaysTvScraper\JustTheGaysTvScraper.csproj" />
         <ProjectReference Include="..\..\extensions\JustTheGaysComScraper\JustTheGaysComScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\BatchDownloader\BatchDownloader.csproj" />
     <!-- EXTENSION_PROJECT_REFERENCES -->
   </ItemGroup>
 
