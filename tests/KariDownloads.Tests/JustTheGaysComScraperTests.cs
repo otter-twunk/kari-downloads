@@ -365,4 +365,137 @@ public sealed class JustTheGaysComScraperTests
         Assert.DoesNotContain("Reno Gold", scraped.PerformerNames);
         Assert.DoesNotContain("Sean Ford", scraped.PerformerNames);
     }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_WhenRequestedUrlRedirectsTo404_RecoversRelocatedVideoViaSearch()
+    {
+        const string oldUrl = "https://justthegays.com/video/16422-peachyyboy-dominates-romeo-twink-with-a-dildo-he-cum-on-his-ass-22-052623/";
+        const string newUrl = "https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/";
+        const string searchApiUrl = "https://justthegays.com/wp-json/wp/v2/search?subtype=video&per_page=20&search=Peachyyboy%20dominates%20Romeo%20Twink%20with%20a%20dildo%20before%20he%20cum%20on%20his%20ass";
+
+        const string page404Html = """
+            <!doctype html>
+            <html>
+            <head>
+                <title>JustTheGays - Jerk to the hottest and best gay porn</title>
+                <link rel="canonical" href="https://justthegays.com/page-404/" />
+            </head>
+            <body>
+                <h1>Page Not Found</h1>
+                <p>The video you're looking for has moved. Try searching for it or check out the popular content below.</p>
+            </body>
+            </html>
+            """;
+
+        const string searchResultsJson = """
+            [
+              {
+                "id": 38038,
+                "title": "Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass",
+                "url": "https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/",
+                "type": "video",
+                "subtype": "video"
+              }
+            ]
+            """;
+
+        const string newVideoHtml = """
+            <!doctype html>
+            <html>
+            <head>
+                <title>Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass - JustTheGays.com</title>
+                <link rel="canonical" href="https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/" />
+                <meta property="og:image" content="https://justthegays.com/wp-content/uploads/2023/09/102305p.jpg" />
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org/",
+                  "@type": "VideoObject",
+                  "name": "Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass",
+                  "thumbnailUrl": "https://justthegays.com/wp-content/uploads/2023/09/102305p.jpg"
+                }
+                </script>
+            </head>
+            <body>
+                <article class="post-38038 video">
+                    <h1>Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass</h1>
+                    <time datetime="2023-09-07 06:20:00">2023-09-07</time>
+                    <div class="post-categories">
+                        <a href="https://justthegays.com/categories/jerk-off-102617/" rel="tag">Jerk Off</a>
+                        <a href="https://justthegays.com/categories/toys-102617/" rel="tag">Toys</a>
+                        <a href="https://justthegays.com/categories/young-twink-102617/" rel="tag">Young/Twink</a>
+                    </div>
+                    <div class="post-tags">
+                        <a href="https://justthegays.com/performers/peachyyboy-102617/" rel="tag">PeachyyBoy</a>
+                        <a href="https://justthegays.com/performers/romeo-twink-102617/" rel="tag">Romeo Twink</a>
+                    </div>
+                </article>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(oldUrl, page404Html)
+            .MapHtml(searchApiUrl, searchResultsJson)
+            .MapHtml(newUrl, newVideoHtml);
+
+        var extension = new JustTheGaysComScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysComScraperExtension.VideoScraperId,
+                new VideoScrapeInput
+                {
+                    Url = oldUrl,
+                    Title = "Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass"
+                },
+                new ScraperPermissions(["justthegays.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass", scraped.Title);
+        Assert.Equal("38038", scraped.Code);
+        Assert.Equal("2023-09-07", scraped.Date);
+        Assert.Equal(["PeachyyBoy", "Romeo Twink"], scraped.PerformerNames);
+        Assert.Equal(["Jerk Off", "Toys", "Young/Twink"], scraped.TagNames);
+        Assert.Equal("https://justthegays.com/wp-content/uploads/2023/09/102305p.jpg", scraped.ImageUrl);
+        Assert.Equal([newUrl], scraped.Urls);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_WhenRequestedUrlRedirectsTo404AndNotFound_ReturnsNullInsteadOf404Data()
+    {
+        const string nonExistentUrl = "https://justthegays.com/video/999999-deleted-video-no-longer-available/";
+        const string page404Html = """
+            <!doctype html>
+            <html>
+            <head>
+                <title>JustTheGays - Jerk to the hottest and best gay porn</title>
+                <link rel="canonical" href="https://justthegays.com/page-404/" />
+            </head>
+            <body>
+                <h1>Page Not Found</h1>
+                <p>The video you're looking for has moved.</p>
+            </body>
+            </html>
+            """;
+
+        var searchApiUrl = $"https://justthegays.com/wp-json/wp/v2/search?subtype=video&per_page=20&search={Uri.EscapeDataString("deleted video no longer available")}";
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(nonExistentUrl, page404Html)
+            .MapHtml(searchApiUrl, "[]");
+
+        var extension = new JustTheGaysComScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysComScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = nonExistentUrl },
+                new ScraperPermissions(["justthegays.com"])),
+            CancellationToken.None);
+
+        Assert.Null(scraped);
+    }
 }

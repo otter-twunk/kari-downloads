@@ -237,6 +237,34 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
         }
 
         var comHtml = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
+        if (Is404Html(comHtml))
+        {
+            var searchTerms = ExtractSearchTermsFromUrl(url);
+            if (!string.IsNullOrWhiteSpace(searchTerms))
+            {
+                var searchApiUrl = $"https://justthegays.com/wp-json/wp/v2/search?subtype=video&per_page=5&search={Uri.EscapeDataString(searchTerms)}";
+                try
+                {
+                    var searchJson = await ScraperUtilities.FetchHtmlAsync(client, searchApiUrl, ct);
+                    using var doc = JsonDocument.Parse(searchJson);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
+                    {
+                        var resolvedUrl = TryGetJsonString(doc.RootElement[0], "url");
+                        if (!string.IsNullOrWhiteSpace(resolvedUrl) && !string.Equals(resolvedUrl, url, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return await InspectPageAsync(resolvedUrl, client, ct);
+                        }
+                    }
+                }
+                catch
+                {
+                    // Fall through to error
+                }
+            }
+
+            throw new InvalidOperationException($"The video at {url} has moved or is no longer available (404 Page Not Found).");
+        }
+
         var parsedCom = ParseJustTheGaysComHtml(comHtml, url, allowMissingMedia: true);
         if (!string.IsNullOrWhiteSpace(parsedCom.MediaUrl))
             return parsedCom;
@@ -799,6 +827,44 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
         if (Uri.TryCreate(new Uri(baseUrl), candidate, out var relative))
             return relative.ToString();
         return null;
+    }
+
+    public static bool Is404Html(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return true;
+
+        if (html.Contains("/page-404/", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (Regex.IsMatch(html, @"<body\b[^>]*\bclass\s*=\s*['""][^'""]*\berror404\b", RegexOptions.IgnoreCase))
+            return true;
+
+        if (html.Contains("Page Not Found", StringComparison.OrdinalIgnoreCase)
+            && (html.Contains("The video you're looking for has moved", StringComparison.OrdinalIgnoreCase)
+                || html.Contains("looking for has moved", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public static string? ExtractSearchTermsFromUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return null;
+
+        var pathMatch = VideoPathRegex.Match(uri.AbsolutePath);
+        if (!pathMatch.Success)
+            return null;
+
+        var slug = pathMatch.Groups["slug"].Value;
+        slug = Regex.Replace(slug, @"^\d+-+", string.Empty);
+        slug = Regex.Replace(slug, @"-\d+(?:-\d+)*$", string.Empty);
+
+        var terms = slug.Replace('-', ' ').Trim();
+        return string.IsNullOrWhiteSpace(terms) ? null : terms;
     }
 
     private HttpClient CreateHttpClient(IDownloaderHost? host = null)

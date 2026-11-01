@@ -236,4 +236,83 @@ public sealed class JustTheGaysComDownloaderTests
         Assert.DoesNotContain("Alejandro Pino", meta.PerformerNames);
         Assert.DoesNotContain("Ashton Summers", meta.PerformerNames);
     }
+
+    [Fact]
+    public async Task JustTheGaysCom_WhenUrlRedirectsTo404_RecoversAndDownloadsRelocatedVideo()
+    {
+        const string oldUrl = "https://justthegays.com/video/16422-peachyyboy-dominates-romeo-twink-with-a-dildo-he-cum-on-his-ass-22-052623/";
+        const string newUrl = "https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/";
+        const string mp4Url = "https://justthegays.hr1alfri.xyz/l/l/09.23/mig/38038.mp4";
+
+        const string page404Html = """
+            <!doctype html>
+            <html>
+            <head>
+                <link rel="canonical" href="https://justthegays.com/page-404/" />
+            </head>
+            <body>
+                <h1>Page Not Found</h1>
+                <p>The video you're looking for has moved.</p>
+            </body>
+            </html>
+            """;
+
+        var searchApiUrl = $"https://justthegays.com/wp-json/wp/v2/search?subtype=video&per_page=5&search={Uri.EscapeDataString("peachyyboy dominates romeo twink with a dildo he cum on his ass")}";
+        const string searchJson = """
+            [
+              {
+                "id": 38038,
+                "title": "Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass",
+                "url": "https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/",
+                "type": "video",
+                "subtype": "video"
+              }
+            ]
+            """;
+
+        const string newHtml = """
+            <!doctype html>
+            <html>
+            <head>
+                <title>Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass - JustTheGays.com</title>
+                <link rel="canonical" href="https://justthegays.com/video/38038-peachyyboy-dominates-romeo-twink-with-a-dildo-before-he-cum-on-his-ass-102622/" />
+            </head>
+            <body>
+                <article class="post-38038 video">
+                    <video playsinline controls>
+                        <source src="https://justthegays.hr1alfri.xyz/l/l/09.23/mig/38038.mp4" type="video/mp4" />
+                    </video>
+                    <h1>Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass</h1>
+                    <div class="post-tags">
+                        <a href="https://justthegays.com/performers/peachyyboy-102617/" rel="tag">PeachyyBoy</a>
+                        <a href="https://justthegays.com/performers/romeo-twink-102617/" rel="tag">Romeo Twink</a>
+                    </div>
+                </article>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(oldUrl, page404Html)
+            .MapHtml(searchApiUrl, searchJson)
+            .MapHtml(newUrl, newHtml)
+            .MapBytes(mp4Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new JustTheGaysComDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                JustTheGaysComDownloaderExtension.PrimaryDownloaderId,
+                oldUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["justthegays.com", "justthegays.hr1alfri.xyz"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("Peachyyboy dominates Romeo Twink with a dildo before he cum on his ass.mp4", result.OriginalFilename);
+        Assert.NotNull(result.InlineVideoMetadata);
+        Assert.Equal(["PeachyyBoy", "Romeo Twink"], result.InlineVideoMetadata.PerformerNames);
+    }
 }

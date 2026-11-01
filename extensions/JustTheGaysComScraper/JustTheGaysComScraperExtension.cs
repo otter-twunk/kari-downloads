@@ -121,6 +121,41 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
 
         var normalizedUrl = NormalizeVideoUrl(sourceUrl!);
         var html = await ScraperUtilities.FetchHtmlAsync(client, normalizedUrl, ct);
+
+        if (Is404Html(html))
+        {
+            var fallbackTitle = CleanSearchQuery(request.Input.Title);
+            if (string.IsNullOrWhiteSpace(fallbackTitle))
+                fallbackTitle = ExtractSearchTermsFromUrl(sourceUrl);
+
+            if (!string.IsNullOrWhiteSpace(fallbackTitle))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(VideoScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl) && !string.Equals(resolvedUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
+            return null;
+        }
+
         var parsedFromHtml = ParseVideoHtml(html, normalizedUrl, request.Input);
 
         // If the HTML lacked performers or tags, try resolving the WP REST API URL
@@ -821,6 +856,44 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
     private static string AppendEmbedQuery(string url)
     {
         return url.Contains('?') ? $"{url}&_embed=1" : $"{url}?_embed=1";
+    }
+
+    public static bool Is404Html(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+            return true;
+
+        if (html.Contains("/page-404/", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (Regex.IsMatch(html, @"<body\b[^>]*\bclass\s*=\s*['""][^'""]*\berror404\b", RegexOptions.IgnoreCase))
+            return true;
+
+        if (html.Contains("Page Not Found", StringComparison.OrdinalIgnoreCase)
+            && (html.Contains("The video you're looking for has moved", StringComparison.OrdinalIgnoreCase)
+                || html.Contains("looking for has moved", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    public static string? ExtractSearchTermsFromUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return null;
+
+        var pathMatch = VideoPathRegex.Match(uri.AbsolutePath);
+        if (!pathMatch.Success)
+            return null;
+
+        var slug = pathMatch.Groups["slug"].Value;
+        slug = Regex.Replace(slug, @"^\d+-+", string.Empty);
+        slug = Regex.Replace(slug, @"-\d+(?:-\d+)*$", string.Empty);
+
+        var terms = slug.Replace('-', ' ').Trim();
+        return string.IsNullOrWhiteSpace(terms) ? null : terms;
     }
 
     private static string? TryGetJsonString(JsonElement element, string propertyName)
