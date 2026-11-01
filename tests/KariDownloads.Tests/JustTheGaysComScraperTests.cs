@@ -249,4 +249,120 @@ public sealed class JustTheGaysComScraperTests
         Assert.Equal("99999", results[0].Code);
         Assert.Equal("https://justthegays.com/video/99999-supremexalpha-raw-pledge-train/", results[0].Urls[0]);
     }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_RejectsSiteLogoAndExtractsRealThumbnailFromJsonLd()
+    {
+        const string pageUrl = "https://justthegays.com/video/230416-angel-elias-drills-nathan-luna-raw/";
+        const string htmlWithLogoAndJsonLd = """
+            <!doctype html>
+            <html>
+            <head>
+                <meta property="og:title" content="Angel Elias drills Nathan Luna raw - JustTheGays.com" />
+                <meta property="og:image" content="https://justthegays.com/wp-content/uploads/2026/07/output-removebg-preview.png" />
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org/",
+                    "@type": "VideoObject",
+                    "name": "Angel Elias drills Nathan Luna raw",
+                    "thumbnailUrl": [
+                        "https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4-150x150.jpg",
+                        "https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4-300x169.jpg",
+                        "https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4.jpg"
+                    ]
+                }
+                </script>
+            </head>
+            <body>
+                <article class="post-230416 video">
+                    <h1>Angel Elias drills Nathan Luna raw</h1>
+                    <div class="post-content">
+                        <p>Watch Angel Elias drills Nathan Luna raw online on GaysBeingGay.</p>
+                        <div class="post-tags">
+                            <a href="https://justthegays.com/performers/angel-elias-102617/" rel="tag">Angel Elias</a>
+                            <a href="https://justthegays.com/performers/nathan-luna-102617/" rel="tag">Nathan Luna</a>
+                        </div>
+                    </div>
+                </article>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithLogoAndJsonLd);
+
+        var extension = new JustTheGaysComScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysComScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["justthegays.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Angel Elias drills Nathan Luna raw", scraped.Title);
+        Assert.Equal("https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4.jpg", scraped.ImageUrl);
+        Assert.Equal(["Angel Elias", "Nathan Luna"], scraped.PerformerNames);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_IgnoresMenuPerformersInFooterAndExtractsOnlyPostTags()
+    {
+        const string pageUrl = "https://justthegays.com/video/69359-angel-elias-fucks-flynn-fenix-102621/";
+        const string htmlWithFooterMenu = """
+            <!doctype html>
+            <html>
+            <head>
+                <meta property="og:title" content="Angel Elias fucks Flynn Fenix - JustTheGays.com" />
+                <meta property="og:image" content="https://justthegays.com/wp-content/uploads/2026/07/159279p-1.jpg" />
+            </head>
+            <body>
+                <article class="post-69359 video">
+                    <h1>Angel Elias fucks Flynn Fenix</h1>
+                    <div class="post-content">
+                        <p>Angel Elias fucks Flynn Fenix bareback.</p>
+                        <div class="post-tags">
+                            <a href="https://justthegays.com/performers/angel-elias-102617/" rel="tag">Angel Elias</a>
+                            <a href="https://justthegays.com/performers/flynn-fenix-102617/" rel="tag">Flynn Fenix</a>
+                        </div>
+                    </div>
+                </article>
+                <div id="footer-sidebar-2">
+                    <nav class="menu-performers-container">
+                        <ul id="menu-performers" class="menu">
+                            <li class="menu-item"><a href="https://justthegays.com/performers/alejandro-pino-hotalex6-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Alejandro Pino (hotalex6)</span></span></a></li>
+                            <li class="menu-item"><a href="https://justthegays.com/performers/ashton-summers-ossanjurjo-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Ashton Summers (ossanjurjo)</span></span></a></li>
+                            <li class="menu-item"><a href="https://justthegays.com/performers/braden-sherota-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Braden Sherota (flowasthetao)</span></span></a></li>
+                            <li class="menu-item"><a href="https://justthegays.com/performers/reno-gold-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Reno Gold</span></span></a></li>
+                            <li class="menu-item"><a href="https://justthegays.com/performers/sean-ford-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Sean Ford (theonlyseanford)</span></span></a></li>
+                        </ul>
+                    </nav>
+                </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithFooterMenu);
+
+        var extension = new JustTheGaysComScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysComScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["justthegays.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal(["Angel Elias", "Flynn Fenix"], scraped.PerformerNames);
+        Assert.DoesNotContain("Alejandro Pino", scraped.PerformerNames);
+        Assert.DoesNotContain("Ashton Summers", scraped.PerformerNames);
+        Assert.DoesNotContain("Braden Sherota", scraped.PerformerNames);
+        Assert.DoesNotContain("Reno Gold", scraped.PerformerNames);
+        Assert.DoesNotContain("Sean Ford", scraped.PerformerNames);
+    }
 }

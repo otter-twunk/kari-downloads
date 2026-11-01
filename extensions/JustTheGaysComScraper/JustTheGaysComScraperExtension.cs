@@ -34,12 +34,14 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PerformerLinkRegex = new(
-        @"href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*\brel\s*=\s*['""]tag['""][^>]*>(?<name>.*?)</a>" +
+        @"|(?is)<a\b[^>]*\brel\s*=\s*['""]tag['""][^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex CategoryLinkRegex = new(
-        @"href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/categories/[^'""]+['""][^>]*rel\s*=\s*['""]tag['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/categories/[^'""]+['""][^>]*\brel\s*=\s*['""]tag['""][^>]*>(?<name>.*?)</a>" +
+        @"|(?is)<a\b[^>]*\brel\s*=\s*['""]tag['""][^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/categories/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex WpJsonLinkRegex = new(
         @"<link\b[^>]+rel\s*=\s*['""]alternate['""][^>]+type\s*=\s*['""]application/json['""][^>]+href\s*=\s*['""](?<href>https?://[^'""]+/wp-json/wp/v2/video/\d+)['""]",
@@ -240,9 +242,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             ?? DownloaderUtilities.ExtractMetaContent(html, "description")
             ?? fallbackInput?.Details;
 
-        var performers = new List<string>();
-        foreach (Match match in PerformerLinkRegex.Matches(articleHtml))
-            performers.Add(match.Groups["name"].Value);
+        var performers = ExtractPerformersFromHtml(articleHtml);
 
         var tags = new List<string>();
         foreach (Match match in CategoryLinkRegex.Matches(articleHtml))
@@ -255,8 +255,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             tags.AddRange(InferComCategoriesFromDetails(rawDetails));
 
         var cleanedDetails = CleanComDetails(rawDetails, title);
-        var imageUrl = DownloaderUtilities.ExtractMetaContent(html, "og:image")
-            ?? DownloaderUtilities.ExtractMetaContent(html, "twitter:image");
+        var imageUrl = ExtractVideoThumbnail(html);
 
         var code = ExtractComCode(pageUrl, html) ?? fallbackInput?.Code;
 
@@ -325,6 +324,24 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
                 tags.AddRange(InferComCategoriesFromDetails(plainContent));
         }
 
+        string? imageUrl = null;
+        if (root.TryGetProperty("_embedded", out var embedded) && embedded.ValueKind == JsonValueKind.Object
+            && embedded.TryGetProperty("wp:featuredmedia", out var mediaList) && mediaList.ValueKind == JsonValueKind.Array
+            && mediaList.GetArrayLength() > 0)
+        {
+            imageUrl = TryGetJsonString(mediaList[0], "source_url");
+        }
+
+        if (string.IsNullOrWhiteSpace(imageUrl) && root.TryGetProperty("yoast_head_json", out var yoast) && yoast.ValueKind == JsonValueKind.Object
+            && yoast.TryGetProperty("og_image", out var ogImageList) && ogImageList.ValueKind == JsonValueKind.Array
+            && ogImageList.GetArrayLength() > 0)
+        {
+            imageUrl = TryGetJsonString(ogImageList[0], "url");
+        }
+
+        if (IsGenericComLogo(imageUrl))
+            imageUrl = null;
+
         var cleanedDetails = CleanComDetails(rawContent, title);
 
         string? code = null;
@@ -339,6 +356,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             Code = code,
             Date = date,
             Details = cleanedDetails,
+            ImageUrl = imageUrl,
             StudioName = DefaultStudioName,
             PerformerNames = ScraperUtilities.DeduplicateStrings(performers),
             TagNames = ScraperUtilities.DeduplicateStrings(tags),
@@ -443,11 +461,20 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         if (string.IsNullOrWhiteSpace(imageUrl))
             return true;
 
-        return Regex.IsMatch(imageUrl, @"/(?:logo\d*|output-removebg-preview|JustTheGays)\.(?:png|jpg|jpeg|webp)(?:\?|$)", RegexOptions.IgnoreCase);
+        if (imageUrl.Contains("gravatar.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return Regex.IsMatch(
+            imageUrl,
+            @"/(?:logo[a-zA-Z0-9_-]*|output-removebg-preview[a-zA-Z0-9_-]*|JustTheGays(?:-[a-zA-Z0-9_]+)?|default[a-zA-Z0-9_-]*|avatar[a-zA-Z0-9_-]*)\.(?:png|jpg|jpeg|webp)(?:\?|$)",
+            RegexOptions.IgnoreCase);
     }
 
     private static ScrapedVideoDto MergeVideoResults(ScrapedVideoDto primary, ScrapedVideoDto secondary)
     {
+        var primaryImage = !IsGenericComLogo(primary.ImageUrl) ? primary.ImageUrl : null;
+        var secondaryImage = !IsGenericComLogo(secondary.ImageUrl) ? secondary.ImageUrl : null;
+
         return new ScrapedVideoDto
         {
             SourceScraperId = VideoScraperId,
@@ -455,12 +482,173 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             Code = primary.Code ?? secondary.Code,
             Date = primary.Date ?? secondary.Date,
             Details = !string.IsNullOrWhiteSpace(primary.Details) ? primary.Details : secondary.Details,
-            ImageUrl = primary.ImageUrl ?? secondary.ImageUrl,
+            ImageUrl = primaryImage ?? secondaryImage,
             StudioName = DefaultStudioName,
             PerformerNames = primary.PerformerNames.Count > 0 ? primary.PerformerNames : secondary.PerformerNames,
             TagNames = primary.TagNames.Count > 0 ? primary.TagNames : secondary.TagNames,
             Urls = primary.Urls.Count > 0 ? primary.Urls : secondary.Urls
         };
+    }
+
+    private static List<string> ExtractPerformersFromHtml(string html)
+    {
+        var performers = new List<string>();
+
+        // 1. Look specifically in post-tags or post-terms container if available
+        var postTagsMatch = Regex.Match(
+            html,
+            @"(?is)<div\b[^>]*class\s*=\s*['""][^'""]*\b(?:post-tags|post-terms)\b[^'""]*['""][^>]*>(?<content>.*?)</div>");
+
+        if (postTagsMatch.Success)
+        {
+            var content = postTagsMatch.Groups["content"].Value;
+            foreach (Match match in Regex.Matches(content, @"(?is)<a\b[^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>"))
+            {
+                var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
+                if (!string.IsNullOrWhiteSpace(name))
+                    performers.Add(name);
+            }
+
+            if (performers.Count > 0)
+                return ScraperUtilities.DeduplicateStrings(performers);
+        }
+
+        // 2. Fall back to wider search scope requiring rel="tag" and excluding menus
+        var searchScope = Regex.Replace(html, @"(?is)<(?:nav|div|aside)\b[^>]*id\s*=\s*['""][^'""]*(?:sidebar|footer|menu)[^'""]*['""][^>]*>.*?</(?:nav|div|aside)>", string.Empty);
+        searchScope = Regex.Replace(searchScope, @"(?is)<ul\b[^>]*class\s*=\s*['""][^'""]*\bmenu\b[^'""]*['""][^>]*>.*?</ul>", string.Empty);
+
+        foreach (Match match in PerformerLinkRegex.Matches(searchScope))
+        {
+            var rawTag = match.Value;
+            if (rawTag.Contains("menu-item", StringComparison.OrdinalIgnoreCase)
+                || rawTag.Contains("menu-title", StringComparison.OrdinalIgnoreCase)
+                || rawTag.Contains("menu-icon", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
+            if (!string.IsNullOrWhiteSpace(name))
+                performers.Add(name);
+        }
+
+        return ScraperUtilities.DeduplicateStrings(performers);
+    }
+
+    private static string? ExtractVideoThumbnail(string html)
+    {
+        // 1. JSON-LD VideoObject.thumbnailUrl or image
+        var jsonLdMatches = Regex.Matches(html, @"(?is)<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(.*?)</script>");
+        foreach (Match match in jsonLdMatches)
+        {
+            var json = match.Groups[1].Value.Trim();
+            if (string.IsNullOrWhiteSpace(json))
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var thumb = FindThumbnailInJsonLd(doc.RootElement);
+                if (!string.IsNullOrWhiteSpace(thumb) && !IsGenericComLogo(thumb))
+                    return thumb;
+            }
+            catch
+            {
+                // Continue checking other JSON-LD blocks
+            }
+        }
+
+        // 2. OpenGraph / Twitter meta image
+        var ogImage = DownloaderUtilities.ExtractMetaContent(html, "og:image");
+        if (!string.IsNullOrWhiteSpace(ogImage) && !IsGenericComLogo(ogImage))
+            return ogImage;
+
+        var twitterImage = DownloaderUtilities.ExtractMetaContent(html, "twitter:image");
+        if (!string.IsNullOrWhiteSpace(twitterImage) && !IsGenericComLogo(twitterImage))
+            return twitterImage;
+
+        // 3. HTML5 <video poster="...">
+        var poster = DownloaderUtilities.ExtractFirstRawMatch(html, @"(?is)<video\b[^>]*\bposter\s*=\s*['""](?<poster>https?://[^'""]+)['""]");
+        if (!string.IsNullOrWhiteSpace(poster) && !IsGenericComLogo(poster))
+            return poster;
+
+        // 4. WordPress featured image <img ... class="...wp-post-image..." ... src="...">
+        var wpPostImage = DownloaderUtilities.ExtractFirstRawMatch(html, @"(?is)<img\b[^>]*\bclass\s*=\s*['""][^'""]*\bwp-post-image\b[^'""]*['""][^>]*\bsrc\s*=\s*['""](?<src>https?://[^'""]+)['""]")
+            ?? DownloaderUtilities.ExtractFirstRawMatch(html, @"(?is)<img\b[^>]*\bsrc\s*=\s*['""](?<src>https?://[^'""]+)['""][^>]*\bclass\s*=\s*['""][^'""]*\bwp-post-image\b[^'""]*['""]");
+        if (!string.IsNullOrWhiteSpace(wpPostImage) && !IsGenericComLogo(wpPostImage))
+            return wpPostImage;
+
+        return null;
+    }
+
+    private static string? FindThumbnailInJsonLd(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var found = FindThumbnailInJsonLd(item);
+                if (!string.IsNullOrWhiteSpace(found))
+                    return found;
+            }
+            return null;
+        }
+
+        if (element.ValueKind != JsonValueKind.Object)
+            return null;
+
+        if (element.TryGetProperty("@graph", out var graph) && graph.ValueKind == JsonValueKind.Array)
+        {
+            var found = FindThumbnailInJsonLd(graph);
+            if (!string.IsNullOrWhiteSpace(found))
+                return found;
+        }
+
+        if (element.TryGetProperty("thumbnailUrl", out var thumbProp))
+        {
+            if (thumbProp.ValueKind == JsonValueKind.String)
+            {
+                var str = thumbProp.GetString();
+                if (!string.IsNullOrWhiteSpace(str) && !IsGenericComLogo(str))
+                    return str;
+            }
+            else if (thumbProp.ValueKind == JsonValueKind.Array)
+            {
+                var candidateUrls = new List<string>();
+                foreach (var item in thumbProp.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var url = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(url) && !IsGenericComLogo(url))
+                            candidateUrls.Add(url);
+                    }
+                }
+
+                var fullSize = candidateUrls.FirstOrDefault(u => !Regex.IsMatch(u, @"-\d+x\d+\.[a-zA-Z0-9]+(?:\?|$)"));
+                var candidate = fullSize ?? candidateUrls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(candidate))
+                    return candidate;
+            }
+        }
+
+        if (element.TryGetProperty("image", out var imageProp))
+        {
+            if (imageProp.ValueKind == JsonValueKind.String)
+            {
+                var str = imageProp.GetString();
+                if (!string.IsNullOrWhiteSpace(str) && !IsGenericComLogo(str))
+                    return str;
+            }
+            else if (imageProp.ValueKind == JsonValueKind.Object && imageProp.TryGetProperty("url", out var urlProp) && urlProp.ValueKind == JsonValueKind.String)
+            {
+                var str = urlProp.GetString();
+                if (!string.IsNullOrWhiteSpace(str) && !IsGenericComLogo(str))
+                    return str;
+            }
+        }
+
+        return null;
     }
 
     private static string ExtractPrimaryArticleHtml(string html)
@@ -612,7 +800,10 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
     {
         var linkMatch = WpJsonLinkRegex.Match(html);
         if (linkMatch.Success)
-            return WebUtility.HtmlDecode(linkMatch.Groups["href"].Value).Trim();
+        {
+            var raw = WebUtility.HtmlDecode(linkMatch.Groups["href"].Value).Trim();
+            return AppendEmbedQuery(raw);
+        }
 
         if (Uri.TryCreate(pageUrl, UriKind.Absolute, out var uri))
         {
@@ -620,11 +811,16 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             if (pathMatch.Success)
             {
                 var slug = pathMatch.Groups["slug"].Value;
-                return $"https://justthegays.com/wp-json/wp/v2/video?slug={Uri.EscapeDataString(slug)}";
+                return $"https://justthegays.com/wp-json/wp/v2/video?slug={Uri.EscapeDataString(slug)}&_embed=1";
             }
         }
 
         return null;
+    }
+
+    private static string AppendEmbedQuery(string url)
+    {
+        return url.Contains('?') ? $"{url}&_embed=1" : $"{url}?_embed=1";
     }
 
     private static string? TryGetJsonString(JsonElement element, string propertyName)
