@@ -187,4 +187,111 @@ public sealed class JustTheGaysTvScraperTests
         Assert.Equal("https://cdn.gff.network/site/performers/alejandro.jpg", scraped.ImageUrl);
         Assert.Equal([performerUrl], scraped.Urls);
     }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_DoesNotIncludeFooterOrSidebarPerformers()
+    {
+        const string pageUrl = "https://justthegays.tv/video/romeo-twink-hot-threesome-fuck-with-valentinoboy-and-eliastwink-78";
+        const string sampleHtml = """
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "Romeo Twink – Hot threesome fuck with ValentinoBoy and elias.twink",
+                  "description": "Watch elias.twink, Romeo Twink and ValentinoBoy.",
+                  "thumbnailUrl": "https://cdn.gff.network/thumbnails/romeo-twink.jpg",
+                  "uploadDate": "2024-06-06T17:00:22.327Z",
+                  "actor": [
+                    {"@type": "Person", "name": "elias.twink"},
+                    {"@type": "Person", "name": "Romeo Twink"},
+                    {"@type": "Person", "name": "ValentinoBoy"}
+                  ]
+                }
+                </script>
+            </head>
+            <body>
+                <span class="category performer-with-follow"><a href="/performer/elias-twink-1">elias.twink</a></span>
+                <span class="category performer-with-follow"><a href="/performer/romeo-twink-2">Romeo Twink</a></span>
+                <span class="category performer-with-follow"><a href="/performer/valentinoboy-3">ValentinoBoy</a></span>
+
+                <div class="cloudcat">
+                    <span class="cloudcat"><a href="/performer/braden-sherota-1">Braden Sherota</a></span>
+                    <span class="cloudcat"><a href="/performer/ten-inch-top-2">TenInchTopXXX</a></span>
+                    <span class="cloudcat"><a href="/performer/malik-delgaty-3">Malik Delgaty</a></span>
+                    <span class="cloudcat"><a href="/performer/svandylove-4">SvandyLove</a></span>
+                    <span class="cloudcat"><a href="/performer/drake-von-5">Drake Von</a></span>
+                    <span class="cloudcat"><a href="/performer/austin-wolf-6">Austin Wolf</a></span>
+                    <span class="cloudcat"><a href="/performer/reno-gold-7">Reno Gold</a></span>
+                </div>
+                <footer>
+                    <a href="/performer/footer-performer-1">Footer Model 1</a>
+                    <a href="/performer/footer-performer-2">Footer Model 2</a>
+                </footer>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, sampleHtml);
+
+        var extension = new JustTheGaysTvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysTvScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["justthegays.tv"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal(["elias.twink", "Romeo Twink", "ValentinoBoy"], scraped.PerformerNames);
+        Assert.DoesNotContain("Braden Sherota", scraped.PerformerNames);
+        Assert.DoesNotContain("Austin Wolf", scraped.PerformerNames);
+        Assert.DoesNotContain("Footer Model 1", scraped.PerformerNames);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_UsesDomFallbackWhenJsonLdAndBootstrapMissing()
+    {
+        const string pageUrl = "https://justthegays.tv/video/sample-dom-scene-12345";
+        const string sampleHtml = """
+            <!doctype html>
+            <html lang="en">
+            <head>
+                <title>Sample DOM Scene - gay porn | JustTheGays</title>
+                <meta property="og:description" content="Hot scene synopsis." />
+            </head>
+            <body>
+                <span class="category performer-with-follow"><a href="/performer/solo-performer-1">Solo Performer</a></span>
+                <span class="category"><a href="/p6927/category/bareback">Bareback</a></span>
+
+                <div class="cloudcat">
+                    <span class="cloudcat"><a href="/performer/random-tagcloud-performer">Random Model</a></span>
+                </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, sampleHtml);
+
+        var extension = new JustTheGaysTvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysTvScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["justthegays.tv"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal(["Solo Performer"], scraped.PerformerNames);
+        Assert.Equal(["Bareback"], scraped.TagNames);
+        Assert.DoesNotContain("Random Model", scraped.PerformerNames);
+    }
 }

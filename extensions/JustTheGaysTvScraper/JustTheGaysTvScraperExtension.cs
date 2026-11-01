@@ -33,13 +33,29 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
         @"video:\{(?<video>.*?)\},(?:inQuickies|related):",
         RegexOptions.Singleline | RegexOptions.Compiled);
 
-    private static readonly Regex TvCategoryLinkRegex = new(
-        @"href\s*=\s*['""]/(?:\d+/)?category/[^'""]+['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex TvPerformerSpanRegex = new(
+        @"(?is)<span\b[^>]*\bclass\s*=\s*['""][^'""]*performer-with-follow[^'""]*['""][^>]*>\s*<a\b[^>]*href\s*=\s*['""][^'""]*/performer/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
-    private static readonly Regex TvPerformerLinkRegex = new(
-        @"href\s*=\s*['""]/performer/[^'""]+['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex TvFeaturingParagraphRegex = new(
+        @"(?is)<p\b[^>]*>\s*Featuring\s+(?<block>.*?)</p>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TvAnchorPerformerRegex = new(
+        @"(?is)<a\b[^>]*href\s*=\s*['""][^'""]*/performer/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TvCategorySpanRegex = new(
+        @"(?is)<span\b[^>]*\bclass\s*=\s*['""][^'""]*\bcategory\b[^'""]*['""][^>]*>\s*<a\b[^>]*href\s*=\s*['""][^'""]*/(?:p\d+/)?category/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TvFiledUnderParagraphRegex = new(
+        @"(?is)(?:video is filed under|filed under)\s+(?<block>.*?)</p>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TvAnchorCategoryRegex = new(
+        @"(?is)<a\b[^>]*href\s*=\s*['""][^'""]*/(?:p\d+/)?category/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private IServiceProvider? _services;
 
@@ -197,11 +213,56 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             }
         }
 
-        foreach (Match catMatch in TvCategoryLinkRegex.Matches(html))
-            tags.Add(catMatch.Groups["name"].Value);
+        if (performers.Count == 0)
+        {
+            foreach (Match match in TvPerformerSpanRegex.Matches(html))
+            {
+                var name = ScraperUtilities.CleanText(Regex.Replace(match.Groups["name"].Value, "<.*?>", string.Empty));
+                if (!string.IsNullOrWhiteSpace(name) && !name.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+                    performers.Add(name);
+            }
 
-        foreach (Match perfMatch in TvPerformerLinkRegex.Matches(html))
-            performers.Add(perfMatch.Groups["name"].Value);
+            if (performers.Count == 0)
+            {
+                var featuringMatch = TvFeaturingParagraphRegex.Match(html);
+                if (featuringMatch.Success)
+                {
+                    foreach (Match match in TvAnchorPerformerRegex.Matches(featuringMatch.Groups["block"].Value))
+                    {
+                        var name = ScraperUtilities.CleanText(Regex.Replace(match.Groups["name"].Value, "<.*?>", string.Empty));
+                        if (!string.IsNullOrWhiteSpace(name) && !name.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+                            performers.Add(name);
+                    }
+                }
+            }
+        }
+
+        if (tags.Count == 0)
+        {
+            foreach (Match match in TvCategorySpanRegex.Matches(html))
+            {
+                if (match.Value.Contains("performer-with-follow", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var name = ScraperUtilities.CleanText(Regex.Replace(match.Groups["name"].Value, "<.*?>", string.Empty));
+                if (!string.IsNullOrWhiteSpace(name))
+                    tags.Add(name);
+            }
+
+            if (tags.Count == 0)
+            {
+                var filedUnderMatch = TvFiledUnderParagraphRegex.Match(html);
+                if (filedUnderMatch.Success)
+                {
+                    foreach (Match match in TvAnchorCategoryRegex.Matches(filedUnderMatch.Groups["block"].Value))
+                    {
+                        var name = ScraperUtilities.CleanText(Regex.Replace(match.Groups["name"].Value, "<.*?>", string.Empty));
+                        if (!string.IsNullOrWhiteSpace(name))
+                            tags.Add(name);
+                    }
+                }
+            }
+        }
 
         title ??= CleanTvTitle(DownloaderUtilities.ExtractHtmlTitle(html))
             ?? fallbackInput?.Title
