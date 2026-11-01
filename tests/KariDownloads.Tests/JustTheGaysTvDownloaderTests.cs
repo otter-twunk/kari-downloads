@@ -197,4 +197,63 @@ public sealed class JustTheGaysTvDownloaderTests
         Assert.Equal("9mxPTAL3qskf", result.InlineVideoMetadata.Code);
         Assert.Equal("2026-08-24", result.InlineVideoMetadata.Date);
     }
+
+    [Fact]
+    public async Task JustTheGaysTv_HtmlWithFooterTagCloud_ExcludesFooterPerformersFromInlineMetadata()
+    {
+        const string videoUrl = "https://justthegays.tv/video/alphabottomx-gets-double-penetrated-pxeg5";
+        const string mediaMp4Url = "https://cdn.gff.network/site/videos/sample.mp4";
+        const string tvHtmlWithFooter = """
+            <!doctype html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "AlphaBottomX gets double penetrated",
+                  "contentUrl": "https://cdn.gff.network/site/videos/sample.mp4",
+                  "actor": [
+                    {"@type": "Person", "name": "AlphaBottomX"},
+                    {"@type": "Person", "name": "Gael Riok"}
+                  ]
+                }
+                </script>
+            </head>
+            <body>
+                <div class="video-container">
+                    <h1>AlphaBottomX gets double penetrated</h1>
+                </div>
+                <div class="cloudcat footer-tags">
+                    <a href="/performer/extra-performer-1">Extra Performer 1</a>
+                    <a href="/performer/extra-performer-2">Extra Performer 2</a>
+                    <a href="/performer/extra-performer-35">Extra Performer 35</a>
+                </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(videoUrl, tvHtmlWithFooter)
+            .MapBytes(mediaMp4Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new JustTheGaysTvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                JustTheGaysTvDownloaderExtension.PrimaryDownloaderId,
+                videoUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["justthegays.tv", "cdn.gff.network"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        var meta = result.InlineVideoMetadata;
+        Assert.NotNull(meta);
+        Assert.Equal(["AlphaBottomX", "Gael Riok"], meta.PerformerNames);
+        Assert.DoesNotContain("Extra Performer 1", meta.PerformerNames);
+        Assert.DoesNotContain("Extra Performer 35", meta.PerformerNames);
+    }
 }

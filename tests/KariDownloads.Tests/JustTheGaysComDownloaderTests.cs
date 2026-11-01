@@ -141,7 +141,7 @@ public sealed class JustTheGaysComDownloaderTests
 
         using var harness = new FakeDownloaderHost()
             .MapHtml(pageUrl, htmlWithoutVideoTag)
-            .MapJson(apiUrl, wpJson)
+            .MapJson(apiUrl + "?_embed=1", wpJson)
             .MapBytes(mp4Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
 
         var extension = new JustTheGaysComDownloaderExtension();
@@ -163,5 +163,77 @@ public sealed class JustTheGaysComDownloaderTests
         Assert.Equal("2024-05-12", result.InlineVideoMetadata.Date);
         Assert.Equal(["Marco Polo", "Bastian Moreyra"], result.InlineVideoMetadata.PerformerNames);
         Assert.Equal(["Bareback", "Latin"], result.InlineVideoMetadata.TagNames);
+    }
+
+    [Fact]
+    public async Task JustTheGaysCom_RejectsLogoAndExtractsJsonLdThumbnailForInlineMetadata()
+    {
+        const string pageUrl = "https://justthegays.com/video/230416-angel-elias-drills-nathan-luna-raw/";
+        const string mp4Url = "https://justthegays.hr1alfri.xyz/l/l/10.26/mig/172641w.mp4";
+        const string htmlWithLogoAndJsonLd = """
+            <!doctype html>
+            <html>
+            <head>
+                <meta property="og:title" content="Angel Elias drills Nathan Luna raw - JustTheGays.com" />
+                <meta property="og:image" content="https://justthegays.com/wp-content/uploads/2026/07/output-removebg-preview.png" />
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org/",
+                    "@type": "VideoObject",
+                    "name": "Angel Elias drills Nathan Luna raw",
+                    "thumbnailUrl": [
+                        "https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4-150x150.jpg",
+                        "https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4.jpg"
+                    ]
+                }
+                </script>
+            </head>
+            <body>
+                <article class="post-230416 video">
+                    <video playsinline controls>
+                        <source src="https://justthegays.hr1alfri.xyz/l/l/10.26/mig/172641w.mp4" type="video/mp4" />
+                    </video>
+                    <h1>Angel Elias drills Nathan Luna raw</h1>
+                    <div class="post-content">
+                        <div class="post-tags">
+                            <a href="https://justthegays.com/performers/angel-elias-102617/" rel="tag">Angel Elias</a>
+                            <a href="https://justthegays.com/performers/nathan-luna-102617/" rel="tag">Nathan Luna</a>
+                        </div>
+                    </div>
+                </article>
+                <div id="footer-sidebar-2">
+                    <ul id="menu-performers" class="menu">
+                        <li class="menu-item"><a href="https://justthegays.com/performers/alejandro-pino-hotalex6-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Alejandro Pino (hotalex6)</span></span></a></li>
+                        <li class="menu-item"><a href="https://justthegays.com/performers/ashton-summers-ossanjurjo-092628/"><span class="menu-icon-wrap"><span class="menu-title menu-text">Ashton Summers (ossanjurjo)</span></span></a></li>
+                    </ul>
+                </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithLogoAndJsonLd)
+            .MapBytes(mp4Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new JustTheGaysComDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                JustTheGaysComDownloaderExtension.PrimaryDownloaderId,
+                pageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["justthegays.com", "justthegays.hr1alfri.xyz"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        var meta = result.InlineVideoMetadata;
+        Assert.NotNull(meta);
+        Assert.Equal("Angel Elias drills Nathan Luna raw", meta.Title);
+        Assert.Equal("https://justthegays.com/wp-content/uploads/2026/10/172641w.mp4.jpg", meta.ImageUrl);
+        Assert.Equal(["Angel Elias", "Nathan Luna"], meta.PerformerNames);
+        Assert.DoesNotContain("Alejandro Pino", meta.PerformerNames);
+        Assert.DoesNotContain("Ashton Summers", meta.PerformerNames);
     }
 }
