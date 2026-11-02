@@ -207,12 +207,22 @@ export async function processVideoScrape(
   }
 
   // 4. Apply Scrape Result
+  const removedPerformerIds = config.performersMode === "replace"
+    ? (video.performers?.map((p) => p.id).filter((id): id is number => typeof id === "number") ?? [])
+    : undefined;
+
+  const removedTagIds = config.tagsMode === "replace"
+    ? (video.tags?.map((t) => t.id).filter((id): id is number => typeof id === "number") ?? [])
+    : undefined;
+
   const applyRes = await fetch(`/api/scrape-attempts/${attempt.id}/apply`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       replaceFields,
       collectionModes,
+      removedPerformerIds,
+      removedTagIds,
       createMissingTags: config.createMissingTags,
       createMissingPerformers: config.createMissingPerformers,
       createMissingStudio: config.createMissingStudio,

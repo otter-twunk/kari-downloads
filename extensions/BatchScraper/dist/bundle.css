@@ -1,1 +1,45 @@
-/* Built-in theme styles inherited from Cove host */
+/* Batch Scraper Extension Styles */
+
+.batch-scraper-backdrop {
+  pointer-events: auto !important;
+  background-color: rgba(0, 0, 0, 0.75);
+}
+
+.batch-scraper-dialog {
+  pointer-events: auto !important;
+  background-color: var(--color-surface, #1a1c23);
+  border-color: var(--color-border, #2a2d38);
+  color: var(--color-foreground, #e8eaf0);
+}
+
+.batch-scraper-card {
+  background-color: var(--color-card, #1e2028);
+  border-color: var(--color-border, #2a2d38);
+}
+
+.batch-scraper-btn-active {
+  background-color: var(--color-accent, #4f8ff7) !important;
+  color: #ffffff !important;
+  border-color: var(--color-accent, #4f8ff7) !important;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.2);
+}
+
+.batch-scraper-btn-inactive {
+  background-color: var(--color-surface, #1a1c23) !important;
+  color: var(--color-secondary, #9ea3b0) !important;
+  border-color: var(--color-border, #2a2d38) !important;
+  cursor: pointer;
+}
+
+.batch-scraper-btn-inactive:hover {
+  background-color: var(--color-card-hover, #252830) !important;
+  color: var(--color-foreground, #e8eaf0) !important;
+  border-color: var(--color-accent, #4f8ff7) !important;
+}
+
+.batch-scraper-btn-inactive:active,
+.batch-scraper-btn-active:active {
+  transform: scale(0.98);
+}
