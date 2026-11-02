@@ -96,7 +96,7 @@ public sealed class GayporntubeDownloaderExtension : CoveExtensionBase, IDownloa
             throw new InvalidOperationException($"Unsupported URL for GayPornTube Downloader: {request.Url}");
 
         host.ReportProgress(5.0, "Inspecting GayPornTube video page...");
-        var pageInfo = await InspectPageAsync(request.Url, ct);
+        var pageInfo = await InspectPageAsync(request.Url, host, ct);
 
         var extension = DownloaderUtilities.EnsureExtensionFromUrl(pageInfo.MediaUrl, ".mp4");
         var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title) + extension;
@@ -104,7 +104,7 @@ public sealed class GayporntubeDownloaderExtension : CoveExtensionBase, IDownloa
 
         var headers = new Dictionary<string, string>
         {
-            ["Referer"] = request.Url
+            ["Referer"] = pageInfo.PageUrl
         };
 
         host.ReportProgress(15.0, "Downloading video stream...");
@@ -146,11 +146,42 @@ public sealed class GayporntubeDownloaderExtension : CoveExtensionBase, IDownloa
         return VideoPathRegex.IsMatch(uri.AbsolutePath);
     }
 
+    public static string NormalizeVideoUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+            return url;
+
+        var host = uri.Host;
+        if (host.Equals("gayporntube.com", StringComparison.OrdinalIgnoreCase))
+            host = "www.gayporntube.com";
+
+        var path = uri.AbsolutePath;
+        var videoMatch = Regex.Match(path, @"^/video/(?<id>\d+)(?:/(?<slug>[^/?#]+))?/?$", RegexOptions.IgnoreCase);
+        if (videoMatch.Success)
+        {
+            var id = videoMatch.Groups["id"].Value;
+            var slug = videoMatch.Groups["slug"].Value;
+            if (string.IsNullOrWhiteSpace(slug))
+                slug = "video";
+
+            return $"https://{host}/video/{id}/{slug}";
+        }
+
+        var embedMatch = Regex.Match(path, @"^/embed/(?<id>\d+)/?$", RegexOptions.IgnoreCase);
+        if (embedMatch.Success)
+        {
+            var id = embedMatch.Groups["id"].Value;
+            return $"https://{host}/video/{id}/video";
+        }
+
+        return uri.ToString();
+    }
+
     internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, CancellationToken ct)
     {
         try
         {
-            return await InspectPageAsync(url, ct);
+            return await InspectPageAsync(url, host: null, ct);
         }
         catch
         {
@@ -158,16 +189,44 @@ public sealed class GayporntubeDownloaderExtension : CoveExtensionBase, IDownloa
         }
     }
 
-    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var targetUrl = NormalizeVideoUrl(url);
+        var client = CreateHttpClient(host);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, targetUrl);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
 
-        using var response = await CreateHttpClient().SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
+        using var response = await client.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            // If the server responded with a redirect location (e.g. 404 with Location header)
+            if (response.Headers.Location is { } loc)
+            {
+                var redirectUrl = loc.IsAbsoluteUri ? loc.ToString() : new Uri(new Uri(targetUrl), loc).ToString();
+                return await InspectPageAsync(redirectUrl, host, ct);
+            }
+
+            // Fallback to embed endpoint if video page returned non-success
+            var idMatch = VideoIdRegex.Match(url);
+            if (idMatch.Success && !targetUrl.Contains("/embed/"))
+            {
+                var embedUrl = $"https://www.gayporntube.com/embed/{idMatch.Groups["id"].Value}";
+                using var embedReq = new HttpRequestMessage(HttpMethod.Get, embedUrl);
+                embedReq.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
+                using var embedRes = await client.SendAsync(embedReq, ct);
+                if (embedRes.IsSuccessStatusCode)
+                {
+                    var embedHtml = await embedRes.Content.ReadAsStringAsync(ct);
+                    return ParsePage(embedHtml, embedUrl);
+                }
+            }
+
+            response.EnsureSuccessStatusCode();
+        }
 
         var html = await response.Content.ReadAsStringAsync(ct);
-        return ParsePage(html, url);
+        return ParsePage(html, targetUrl);
     }
 
     public static ResolvedMediaPage ParsePage(string html, string url)

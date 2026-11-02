@@ -8,8 +8,9 @@ namespace KariDownloads.Tests;
 public sealed class GayporntubeScraperTests
 {
     private const string VideoUrl = "https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked";
+    private const string BareUrl = "https://www.gayporntube.com/video/2144881/";
     private const string EmbedUrl = "https://www.gayporntube.com/embed/2144881";
-    private const string CanonicalUrl = "https://www.gayporntube.com/video/2144881/";
+    private const string NormalizedBareUrl = "https://www.gayporntube.com/video/2144881/video";
 
     private const string VideoDetailHtml = """
         <!DOCTYPE html>
@@ -93,6 +94,14 @@ public sealed class GayporntubeScraperTests
     }
 
     [Fact]
+    public void ToCanonicalVideoUrl_HandlesBareAndEmbedUrls()
+    {
+        Assert.Equal("https://www.gayporntube.com/video/2144881/video", GayporntubeScraperExtension.ToCanonicalVideoUrl("https://gayporntube.com/video/2144881/"));
+        Assert.Equal("https://www.gayporntube.com/video/2144881/video", GayporntubeScraperExtension.ToCanonicalVideoUrl("https://www.gayporntube.com/embed/2144881"));
+        Assert.Equal("https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked", GayporntubeScraperExtension.ToCanonicalVideoUrl("https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked"));
+    }
+
+    [Fact]
     public async Task ScrapeVideoAsync_ExtractsStructuredMetadataFromFixture()
     {
         using var harness = new FakeDownloaderHost()
@@ -121,10 +130,10 @@ public sealed class GayporntubeScraperTests
     }
 
     [Fact]
-    public async Task ScrapeVideoAsync_RewritesEmbedUrlToCanonical()
+    public async Task ScrapeVideoAsync_WithBareUrlWithoutSlug_NormalizesAndProducesSluggedCanonical()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(CanonicalUrl, VideoDetailHtml);
+            .MapHtml(NormalizedBareUrl, VideoDetailHtml);
 
         var extension = new GayporntubeScraperExtension();
         await extension.InitializeAsync(harness.Services);
@@ -132,15 +141,15 @@ public sealed class GayporntubeScraperTests
         var scraped = await extension.ScrapeVideoAsync(
             new ScraperRequest<VideoScrapeInput>(
                 GayporntubeScraperExtension.PrimaryScraperId,
-                new VideoScrapeInput { Url = EmbedUrl },
+                new VideoScrapeInput { Url = BareUrl },
                 new ScraperPermissions(["gayporntube.com"])),
             CancellationToken.None);
 
         Assert.NotNull(scraped);
         Assert.Equal("Frat guy pretend to ride naked", scraped.Title);
         Assert.Equal("2144881", scraped.Code);
-        Assert.Contains(CanonicalUrl, scraped.Urls);
-        Assert.Contains(EmbedUrl, scraped.Urls);
+        Assert.Contains("https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked", scraped.Urls);
+        Assert.Contains(BareUrl, scraped.Urls);
     }
 
     [Fact]

@@ -7,6 +7,8 @@ namespace KariDownloads.Tests;
 public sealed class GayporntubeDownloaderTests
 {
     private const string SamplePageUrl = "https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked";
+    private const string BareVideoUrl = "https://www.gayporntube.com/video/2144881/";
+    private const string NormalizedBareVideoUrl = "https://www.gayporntube.com/video/2144881/video";
     private const string SampleEmbedUrl = "https://www.gayporntube.com/embed/2144881";
     private const string MediaStreamUrl = "https://www.gayporntube.com/get_file/5/69b67e5b6dd82274f66a6c7058db77e9/2144000/2144881/2144881.mp4/?br=689";
 
@@ -65,6 +67,15 @@ public sealed class GayporntubeDownloaderTests
     }
 
     [Fact]
+    public void NormalizeVideoUrl_AppendsSlugAndNormalizesHost()
+    {
+        Assert.Equal("https://www.gayporntube.com/video/2144881/video", GayporntubeDownloaderExtension.NormalizeVideoUrl("https://gayporntube.com/video/2144881"));
+        Assert.Equal("https://www.gayporntube.com/video/2144881/video", GayporntubeDownloaderExtension.NormalizeVideoUrl("https://www.gayporntube.com/video/2144881/"));
+        Assert.Equal("https://www.gayporntube.com/video/2144881/video", GayporntubeDownloaderExtension.NormalizeVideoUrl("https://www.gayporntube.com/embed/2144881"));
+        Assert.Equal("https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked", GayporntubeDownloaderExtension.NormalizeVideoUrl("https://www.gayporntube.com/video/2144881/frat-guy-pretend-to-ride-naked"));
+    }
+
+    [Fact]
     public async Task MatchAsync_DiscoversMetadataAndLabel()
     {
         using var harness = new FakeDownloaderHost()
@@ -113,6 +124,30 @@ public sealed class GayporntubeDownloaderTests
         Assert.Contains("Frat Guys", meta.TagNames);
         Assert.Contains("Muscle Boys", meta.TagNames);
         Assert.Contains(SamplePageUrl, meta.Urls);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_WithBareUrlWithoutSlug_NormalizesAndDownloads()
+    {
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(NormalizedBareVideoUrl, RealisticVideoHtml)
+            .MapBytes(MediaStreamUrl, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new GayporntubeDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                GayporntubeDownloaderExtension.PrimaryDownloaderId,
+                BareVideoUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["gayporntube.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("Frat guy pretend to ride naked.mp4", result.OriginalFilename);
+        Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
     }
 
     [Fact]

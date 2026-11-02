@@ -54,6 +54,10 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
         @"(?is)<div\b[^>]*class=""[^""]*duration[^""]*""[^>]*>(?<dur>[^<]+)</div>",
         RegexOptions.Compiled);
 
+    private static readonly Regex SlugNonWordRegex = new(
+        @"[^a-z0-9]+",
+        RegexOptions.Compiled);
+
     private IServiceProvider? _services;
 
     private static readonly ScraperDescriptor PrimaryDescriptor = new(
@@ -83,9 +87,22 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
         if (!IsSupportedUrl(rawUrl))
             return null;
 
-        var canonicalUrl = ToCanonicalVideoUrl(rawUrl!) ?? rawUrl!;
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), canonicalUrl, ct);
-        return ParseVideoHtml(html, canonicalUrl, request.Input, rawUrl);
+        var targetUrl = ToCanonicalVideoUrl(rawUrl!) ?? rawUrl!;
+        var client = CreateHttpClient();
+
+        string html;
+        try
+        {
+            html = await ScraperUtilities.FetchHtmlAsync(client, targetUrl, ct);
+        }
+        catch (HttpRequestException) when (VideoIdRegex.Match(targetUrl) is { Success: true } idMatch && !targetUrl.Contains("/embed/"))
+        {
+            var embedUrl = $"https://www.gayporntube.com/embed/{idMatch.Groups["id"].Value}";
+            html = await ScraperUtilities.FetchHtmlAsync(client, embedUrl, ct);
+            targetUrl = embedUrl;
+        }
+
+        return ParseVideoHtml(html, targetUrl, request.Input, rawUrl);
     }
 
     public async Task<IReadOnlyList<ScrapedVideoDto>> SearchVideosAsync(
@@ -122,7 +139,7 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
 
     public static string? ToCanonicalVideoUrl(string url)
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
             return null;
 
         var match = VideoPathRegex.Match(uri.AbsolutePath);
@@ -130,10 +147,27 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
             return null;
 
         var id = match.Groups["id"].Value;
-        if (uri.AbsolutePath.StartsWith("/embed/", StringComparison.OrdinalIgnoreCase))
-            return $"https://www.gayporntube.com/video/{id}/";
+        var host = uri.Host.Equals("gayporntube.com", StringComparison.OrdinalIgnoreCase)
+            ? "www.gayporntube.com"
+            : uri.Host;
 
-        return url;
+        var videoSlugMatch = Regex.Match(uri.AbsolutePath, @"^/video/\d+/(?<slug>[^/?#]+)", RegexOptions.IgnoreCase);
+        if (videoSlugMatch.Success && !string.IsNullOrWhiteSpace(videoSlugMatch.Groups["slug"].Value))
+        {
+            var slug = videoSlugMatch.Groups["slug"].Value;
+            return $"https://{host}/video/{id}/{slug}";
+        }
+
+        return $"https://{host}/video/{id}/video";
+    }
+
+    public static string GenerateSlug(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return "video";
+
+        var slug = SlugNonWordRegex.Replace(text.ToLowerInvariant(), "-").Trim('-');
+        return string.IsNullOrWhiteSpace(slug) ? "video" : slug;
     }
 
     public static ScrapedVideoDto ParseVideoHtml(
@@ -178,7 +212,18 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
             }
         }
 
-        var urls = new List<string> { canonicalUrl };
+        var urls = new List<string>();
+
+        if (!string.IsNullOrWhiteSpace(code))
+        {
+            var slug = GenerateSlug(title);
+            var bestCanonicalUrl = $"https://www.gayporntube.com/video/{code}/{slug}";
+            urls.Add(bestCanonicalUrl);
+        }
+
+        if (!urls.Contains(canonicalUrl, StringComparer.OrdinalIgnoreCase))
+            urls.Add(canonicalUrl);
+
         if (!string.IsNullOrWhiteSpace(originalUrl) && !urls.Contains(originalUrl, StringComparer.OrdinalIgnoreCase))
             urls.Add(originalUrl);
 
