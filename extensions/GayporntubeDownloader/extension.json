@@ -1,0 +1,27 @@
+{
+  "id": "karinauts.downloaders.gayporntube",
+  "name": "GayPornTube Downloader",
+  "version": "0.1.0",
+  "description": "Downloads video media and inline metadata from gayporntube.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "metadata"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "GayporntubeDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gayporntube.com",
+      "*.gayporntube.com"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "gayporntube.com",
+      "*.gayporntube.com"
+    ]
+  }
+}

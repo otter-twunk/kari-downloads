@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>GayporntubeScraper</AssemblyName>
+    <RootNamespace>GayporntubeScraper</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\ScraperUtilities.cs" Link="Shared\ScraperUtilities.cs" />
+  </ItemGroup>
+
+</Project>

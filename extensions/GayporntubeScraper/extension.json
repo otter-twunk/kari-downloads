@@ -1,0 +1,27 @@
+{
+  "id": "karinauts.scrapers.gayporntube",
+  "name": "GayPornTube Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video metadata and search candidates from gayporntube.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "GayporntubeScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gayporntube.com",
+      "*.gayporntube.com"
+    ],
+    "scraperRuntime": [
+      "gayporntube.com",
+      "*.gayporntube.com"
+    ],
+    "downloaderRuntime": []
+  }
+}

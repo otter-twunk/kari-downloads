@@ -90,6 +90,18 @@
       "id": "karinauts.scrapers.boyfriendtv",
       "path": "extensions/BoyfriendtvScraper",
       "tagPrefix": "boyfriendtv-scraper/"
+    },
+    {
+      "name": "GayporntubeDownloader",
+      "id": "karinauts.downloaders.gayporntube",
+      "path": "extensions/GayporntubeDownloader",
+      "tagPrefix": "gayporntube-downloader/"
+    },
+    {
+      "name": "GayporntubeScraper",
+      "id": "karinauts.scrapers.gayporntube",
+      "path": "extensions/GayporntubeScraper",
+      "tagPrefix": "gayporntube-scraper/"
     }
   ]
 }
