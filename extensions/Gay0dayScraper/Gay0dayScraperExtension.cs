@@ -175,54 +175,15 @@ public sealed class Gay0dayScraperExtension : CoveExtensionBase, IScraperProvide
         code ??= fallbackInput?.Code;
 
         string? date = structured.Date ?? fallbackInput?.Date;
-
         var details = structured.Description ?? fallbackInput?.Details;
+        var studioName = ExtractStudio(html, structured.StudioName ?? DefaultStudioName);
 
-        string? studioName = null;
-        var sponsorMatch = SponsoredByRegex.Match(html);
-        if (sponsorMatch.Success)
-        {
-            var parsedStudio = ScraperUtilities.CleanText(sponsorMatch.Groups["studio"].Value);
-            if (!string.IsNullOrWhiteSpace(parsedStudio))
-                studioName = parsedStudio;
-        }
-
-        studioName ??= structured.StudioName ?? DefaultStudioName;
-
+        // Performers: only from explicit VideoObject.actor or from the video details "Models:" block
         var performers = new List<string>(structured.PerformerNames);
-        var modelsMatch = ModelsBlockRegex.Match(html);
-        if (modelsMatch.Success)
-        {
-            foreach (Match anchor in AnchorTextRegex.Matches(modelsMatch.Groups["models"].Value))
-            {
-                var name = ScraperUtilities.CleanText(anchor.Groups["text"].Value);
-                if (!string.IsNullOrWhiteSpace(name))
-                    performers.Add(name);
-            }
-        }
+        performers.AddRange(ExtractPerformers(html));
 
-        // Additional fallback: model links
-        if (performers.Count == 0)
-        {
-            foreach (Match match in Regex.Matches(html, @"(?is)<a\b[^>]*href=['""]https?://(?:www\.)?gay0day\.com/models/[^'""]+['""][^>]*>(?<name>[^<]+)</a>"))
-            {
-                var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
-                if (!string.IsNullOrWhiteSpace(name) && !name.Equals("PornStars", StringComparison.OrdinalIgnoreCase))
-                    performers.Add(name);
-            }
-        }
-
-        var tags = new List<string>(structured.TagNames);
-        var tagsMatch = TagsBlockRegex.Match(html);
-        if (tagsMatch.Success)
-        {
-            foreach (Match anchor in AnchorTextRegex.Matches(tagsMatch.Groups["tags"].Value))
-            {
-                var tag = ScraperUtilities.CleanText(anchor.Groups["text"].Value);
-                if (!string.IsNullOrWhiteSpace(tag))
-                    tags.Add(tag);
-            }
-        }
+        // Tags: from the video details "Tags:" block, falling back to non-generic structured tags
+        var tags = ExtractTags(html, structured.TagNames);
 
         var imageUrl = structured.ImageUrl;
         if (IsGenericLogo(imageUrl))
@@ -242,6 +203,131 @@ public sealed class Gay0dayScraperExtension : CoveExtensionBase, IScraperProvide
             PerformerNames = ScraperUtilities.DeduplicateStrings(performers),
             TagNames = ScraperUtilities.DeduplicateStrings(tags)
         };
+    }
+
+    internal static string ExtractVideoDetailsSection(string html)
+    {
+        // 1. Specific tab_video_info container
+        var tabMatch = Regex.Match(
+            html,
+            @"(?is)<div\b[^>]*\bid=['""]tab_video_info['""][^>]*>(?<content>.*?)(?=<div\b[^>]*\bid=['""]tab_|<div\b[^>]*class=['""][^'""]*\bfooter|<div\b[^>]*class=['""][^'""]*\blist-videos|<!-- BROWSE|</body>|$)");
+        if (tabMatch.Success)
+            return tabMatch.Groups["content"].Value;
+
+        // 2. block-details container
+        var blockMatch = Regex.Match(
+            html,
+            @"(?is)<div\b[^>]*class=['""][^'""]*\bblock-details\b[^'""]*['""][^>]*>(?<content>.*?)(?=<div\b[^>]*\bid=['""]tab_|<div\b[^>]*class=['""][^'""]*\bfooter|<div\b[^>]*class=['""][^'""]*\blist-videos|<!-- BROWSE|</body>|$)");
+        if (blockMatch.Success)
+            return blockMatch.Groups["content"].Value;
+
+        // 3. video-info container
+        var infoMatch = Regex.Match(
+            html,
+            @"(?is)<div\b[^>]*class=['""][^'""]*\bvideo-info\b[^'""]*['""][^>]*>(?<content>.*?)(?=<div\b[^>]*class=['""][^'""]*\bfooter|<div\b[^>]*class=['""][^'""]*\blist-videos|<!-- BROWSE|</body>|$)");
+        if (infoMatch.Success)
+            return infoMatch.Groups["content"].Value;
+
+        return string.Empty;
+    }
+
+    internal static List<string> ExtractPerformers(string html)
+    {
+        var performers = new List<string>();
+
+        // Only inspect the video's details container, NEVER the whole page
+        var detailsSection = ExtractVideoDetailsSection(html);
+        if (string.IsNullOrWhiteSpace(detailsSection))
+            return performers;
+
+        // Look specifically for the Models item within the video details
+        var modelsItemMatch = Regex.Match(
+            detailsSection,
+            @"(?is)<div\b[^>]*class=['""][^'""]*\bitem\b[^'""]*['""][^>]*>\s*Models:\s*(?<content>.*?)</div>");
+
+        var modelsBlock = modelsItemMatch.Success
+            ? modelsItemMatch.Groups["content"].Value
+            : Regex.Match(detailsSection, @"(?is)\bModels:\s*(?<content>.*?)(?:</div>|<div\b|Tags:|Sponsored by:)").Groups["content"].Value;
+
+        if (!string.IsNullOrWhiteSpace(modelsBlock))
+        {
+            foreach (Match anchor in Regex.Matches(modelsBlock, @"(?is)<a\b[^>]*href=['""][^'""]*/models/[^/'""]+/?['""][^>]*>(?<name>[^<]+)</a>"))
+            {
+                var name = ScraperUtilities.CleanText(anchor.Groups["name"].Value);
+                if (!string.IsNullOrWhiteSpace(name) && !name.Equals("PornStars", StringComparison.OrdinalIgnoreCase))
+                    performers.Add(name);
+            }
+        }
+
+        return ScraperUtilities.DeduplicateStrings(performers);
+    }
+
+    internal static string ExtractStudio(string html, string defaultStudio = DefaultStudioName)
+    {
+        var detailsSection = ExtractVideoDetailsSection(html);
+        if (!string.IsNullOrWhiteSpace(detailsSection))
+        {
+            var sponsorMatch = Regex.Match(
+                detailsSection,
+                @"(?is)<div\b[^>]*class=['""][^'""]*\bitem\b[^'""]*['""][^>]*>\s*Sponsored by:\s*<a\b[^>]*>(?<studio>[^<]+)</a>");
+
+            if (!sponsorMatch.Success)
+                sponsorMatch = Regex.Match(detailsSection, @"(?is)Sponsored by:\s*<a\b[^>]*>(?<studio>[^<]+)</a>");
+
+            if (sponsorMatch.Success)
+            {
+                var studio = ScraperUtilities.CleanText(sponsorMatch.Groups["studio"].Value);
+                if (!string.IsNullOrWhiteSpace(studio))
+                    return studio;
+            }
+        }
+
+        return defaultStudio;
+    }
+
+    internal static List<string> ExtractTags(string html, IReadOnlyList<string>? fallbackTags = null)
+    {
+        var tags = new List<string>();
+        var detailsSection = ExtractVideoDetailsSection(html);
+        if (!string.IsNullOrWhiteSpace(detailsSection))
+        {
+            var tagsItemMatch = Regex.Match(
+                detailsSection,
+                @"(?is)<div\b[^>]*class=['""][^'""]*\bitem\b[^'""]*['""][^>]*>\s*Tags:\s*(?<content>.*?)</div>");
+
+            var tagsBlock = tagsItemMatch.Success
+                ? tagsItemMatch.Groups["content"].Value
+                : Regex.Match(detailsSection, @"(?is)\bTags:\s*(?<content>.*?)(?:</div>|<div\b|Models:|Sponsored by:)").Groups["content"].Value;
+
+            if (!string.IsNullOrWhiteSpace(tagsBlock))
+            {
+                foreach (Match anchor in Regex.Matches(tagsBlock, @"(?is)<a\b[^>]*href=['""][^'""]*/tags/[^/'""]+/?['""][^>]*>(?<tag>[^<]+)</a>"))
+                {
+                    var tag = ScraperUtilities.CleanText(anchor.Groups["tag"].Value);
+                    if (!string.IsNullOrWhiteSpace(tag))
+                        tags.Add(tag);
+                }
+            }
+        }
+
+        if (tags.Count == 0 && fallbackTags != null)
+        {
+            foreach (var t in fallbackTags)
+            {
+                if (!t.Equals("gay porn", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gayporn", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gay xxx", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gay0day", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gay sex", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gay tube", StringComparison.OrdinalIgnoreCase)
+                    && !t.Equals("gay porn stars", StringComparison.OrdinalIgnoreCase))
+                {
+                    tags.Add(t);
+                }
+            }
+        }
+
+        return ScraperUtilities.DeduplicateStrings(tags);
     }
 
     internal static IReadOnlyList<ScrapedVideoDto> ParseSearchResultsHtml(string html, string baseSearchUrl)

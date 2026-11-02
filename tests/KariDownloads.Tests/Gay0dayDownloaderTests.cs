@@ -185,4 +185,68 @@ public sealed class Gay0dayDownloaderTests
         Assert.Equal("Minimal Clip", result.InlineVideoMetadata.Title);
         Assert.Equal("Gay0Day", result.InlineVideoMetadata.StudioName);
     }
+
+    [Fact]
+    public async Task DownloadAsync_DoesNotExtractPerformersFromFooter()
+    {
+        const string pageUrl = "https://gay0day.com/videos/12345/scene/";
+        const string mediaUrl = "https://gay0day.com/media/scene.mp4";
+        const string htmlWithFooter = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "Scene Title",
+                  "contentUrl": "https://gay0day.com/media/scene.mp4"
+                }
+                </script>
+            </head>
+            <body>
+            <div id="tab_video_info" class="tab-content hidden">
+                <div class="block-details">
+                    <div class="info">
+                        <div class="item">
+                            Models:
+                            <a href="https://gay0day.com/models/real-actor/">Real Actor</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-browse">
+                <h3>Pornstars &amp; Models</h3>
+                <ul>
+                    <li><a href="https://gay0day.com/models/austin-young/">Austin Young</a></li>
+                    <li><a href="https://gay0day.com/models/cutler-x/">Cutler X</a></li>
+                </ul>
+            </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithFooter)
+            .MapBytes(mediaUrl, [0x01, 0x02, 0x03, 0x04], "video/mp4");
+
+        var extension = new Gay0dayDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                Gay0dayDownloaderExtension.PrimaryDownloaderId,
+                pageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["gay0day.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.NotNull(result.InlineVideoMetadata);
+        Assert.Single(result.InlineVideoMetadata.PerformerNames);
+        Assert.Contains("Real Actor", result.InlineVideoMetadata.PerformerNames);
+        Assert.DoesNotContain("Austin Young", result.InlineVideoMetadata.PerformerNames);
+        Assert.DoesNotContain("Cutler X", result.InlineVideoMetadata.PerformerNames);
+    }
 }

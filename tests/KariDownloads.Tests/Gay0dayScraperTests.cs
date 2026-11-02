@@ -260,4 +260,109 @@ public sealed class Gay0dayScraperTests
         Assert.Equal("https://gay0day.com/contents/models/ander-borges/photo.jpg", result.ImageUrl);
         Assert.Equal(performerUrl, result.Urls[0]);
     }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_DoesNotExtractPerformersFromFooterOrNavMenu()
+    {
+        const string pageUrl = "https://gay0day.com/videos/320814/test-scene/";
+        const string htmlWithFooter = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+            <div class="header">
+                <a href="https://gay0day.com/models/" id="item9">PornStars</a>
+            </div>
+            <div id="tab_video_info" class="tab-content hidden">
+                <div class="block-details">
+                    <div class="info">
+                        <div class="item">
+                            Models:
+                            <a href="https://gay0day.com/models/big-marcos/">Big Marcos</a>
+                            <a href="https://gay0day.com/models/ian-surfista/">Ian Surfista</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-browse">
+                <h3>Pornstars &amp; Models</h3>
+                <ul>
+                    <li><a href="https://gay0day.com/models/austin-young/">Austin Young</a></li>
+                    <li><a href="https://gay0day.com/models/cutler-x/">Cutler X</a></li>
+                    <li><a href="https://gay0day.com/models/blake-mitchell/">Blake Mitchell</a></li>
+                </ul>
+            </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithFooter);
+
+        var extension = new Gay0dayScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                Gay0dayScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["gay0day.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(2, result.PerformerNames.Count);
+        Assert.Contains("Big Marcos", result.PerformerNames);
+        Assert.Contains("Ian Surfista", result.PerformerNames);
+
+        // Strict isolation assertions:
+        Assert.DoesNotContain("Austin Young", result.PerformerNames);
+        Assert.DoesNotContain("Cutler X", result.PerformerNames);
+        Assert.DoesNotContain("Blake Mitchell", result.PerformerNames);
+        Assert.DoesNotContain("PornStars", result.PerformerNames);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_ReturnsEmptyPerformers_WhenVideoHasNoModels_EvenIfPageHasFooterModels()
+    {
+        const string pageUrl = "https://gay0day.com/videos/45678/solo-clip/";
+        const string htmlNoVideoModels = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+            <div id="tab_video_info" class="tab-content hidden">
+                <div class="block-details">
+                    <div class="info">
+                        <div class="item">
+                            Tags:
+                            <a href="https://gay0day.com/tags/solo/" title="solo">solo</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-browse">
+                <h3>Pornstars &amp; Models</h3>
+                <ul>
+                    <li><a href="https://gay0day.com/models/austin-young/">Austin Young</a></li>
+                    <li><a href="https://gay0day.com/models/cutler-x/">Cutler X</a></li>
+                </ul>
+            </div>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlNoVideoModels);
+
+        var extension = new Gay0dayScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                Gay0dayScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["gay0day.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Empty(result.PerformerNames);
+    }
 }
