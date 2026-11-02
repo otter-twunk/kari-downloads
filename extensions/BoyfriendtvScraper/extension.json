@@ -1,0 +1,32 @@
+{
+  "id": "karinauts.scrapers.boyfriendtv",
+  "name": "BoyfriendTV Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video and performer metadata and search candidates from boyfriendtv.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video",
+    "performer"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "BoyfriendtvScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "boyfriendtv.com",
+      "*.boyfriendtv.com",
+      "cdn.boyfriendtv.com",
+      "*.cdn.boyfriendtv.com"
+    ],
+    "scraperRuntime": [
+      "boyfriendtv.com",
+      "*.boyfriendtv.com",
+      "cdn.boyfriendtv.com",
+      "*.cdn.boyfriendtv.com"
+    ],
+    "downloaderRuntime": []
+  }
+}

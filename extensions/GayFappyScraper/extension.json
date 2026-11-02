@@ -1,0 +1,28 @@
+{
+  "id": "karinauts.scrapers.gay-fappy",
+  "name": "GayFappy Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video and gallery metadata and search candidates from gayfappy.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video",
+    "gallery"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "GayFappyScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gayfappy.com",
+      "*.gayfappy.com"
+    ],
+    "scraperRuntime": [
+      "gayfappy.com",
+      "*.gayfappy.com"
+    ],
+    "downloaderRuntime": []
+  }
+}

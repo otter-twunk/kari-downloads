@@ -1,0 +1,28 @@
+{
+  "id": "karinauts.scrapers.gay0day",
+  "name": "Gay0day Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video and performer metadata and search candidates from gay0day.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video",
+    "performer"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "Gay0dayScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gay0day.com",
+      "*.gay0day.com"
+    ],
+    "scraperRuntime": [
+      "gay0day.com",
+      "*.gay0day.com"
+    ],
+    "downloaderRuntime": []
+  }
+}

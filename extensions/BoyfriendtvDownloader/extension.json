@@ -1,0 +1,31 @@
+{
+  "id": "karinauts.downloaders.boyfriendtv",
+  "name": "BoyfriendTV Downloader",
+  "version": "0.1.0",
+  "description": "Downloads video media and inline metadata from boyfriendtv.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "metadata"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "BoyfriendtvDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "boyfriendtv.com",
+      "*.boyfriendtv.com",
+      "cdn.boyfriendtv.com",
+      "*.cdn.boyfriendtv.com"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "boyfriendtv.com",
+      "*.boyfriendtv.com",
+      "cdn.boyfriendtv.com",
+      "*.cdn.boyfriendtv.com"
+    ]
+  }
+}

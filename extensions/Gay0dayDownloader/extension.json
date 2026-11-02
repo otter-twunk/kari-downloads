@@ -1,0 +1,31 @@
+{
+  "id": "karinauts.downloaders.gay0day",
+  "name": "Gay0day Downloader",
+  "version": "0.1.0",
+  "description": "Downloads video media and inline metadata from gay0day.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "metadata"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "Gay0dayDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gay0day.com",
+      "*.gay0day.com",
+      "awmcdn.net",
+      "*.awmcdn.net"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "gay0day.com",
+      "*.gay0day.com",
+      "awmcdn.net",
+      "*.awmcdn.net"
+    ]
+  }
+}

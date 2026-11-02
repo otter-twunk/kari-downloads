@@ -1,0 +1,28 @@
+{
+  "id": "karinauts.downloaders.gay-fappy",
+  "name": "GayFappy Downloader",
+  "version": "0.1.0",
+  "description": "Downloads video and gallery media with inline metadata from gayfappy.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "gallery",
+    "metadata"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "GayFappyDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "gayfappy.com",
+      "*.gayfappy.com"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "gayfappy.com",
+      "*.gayfappy.com"
+    ]
+  }
+}

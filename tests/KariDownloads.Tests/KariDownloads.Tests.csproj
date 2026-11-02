@@ -34,6 +34,12 @@
         <ProjectReference Include="..\..\extensions\JustTheGaysComScraper\JustTheGaysComScraper.csproj" />
         <ProjectReference Include="..\..\extensions\BatchDownloader\BatchDownloader.csproj" />
         <ProjectReference Include="..\..\extensions\BatchScraper\BatchScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\GayFappyDownloader\GayFappyDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\GayFappyScraper\GayFappyScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\Gay0dayDownloader\Gay0dayDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\Gay0dayScraper\Gay0dayScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\BoyfriendtvDownloader\BoyfriendtvDownloader.csproj" />
+        <ProjectReference Include="..\..\extensions\BoyfriendtvScraper\BoyfriendtvScraper.csproj" />
     <!-- EXTENSION_PROJECT_REFERENCES -->
   </ItemGroup>
 

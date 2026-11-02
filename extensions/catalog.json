@@ -54,6 +54,42 @@
       "id": "karinauts.tools.batch-scraper",
       "path": "extensions/BatchScraper",
       "tagPrefix": "batch-scraper/"
+    },
+    {
+      "name": "GayFappyDownloader",
+      "id": "karinauts.downloaders.gay-fappy",
+      "path": "extensions/GayFappyDownloader",
+      "tagPrefix": "gay-fappy-downloader/"
+    },
+    {
+      "name": "GayFappyScraper",
+      "id": "karinauts.scrapers.gay-fappy",
+      "path": "extensions/GayFappyScraper",
+      "tagPrefix": "gay-fappy-scraper/"
+    },
+    {
+      "name": "Gay0dayDownloader",
+      "id": "karinauts.downloaders.gay0day",
+      "path": "extensions/Gay0dayDownloader",
+      "tagPrefix": "gay0day-downloader/"
+    },
+    {
+      "name": "Gay0dayScraper",
+      "id": "karinauts.scrapers.gay0day",
+      "path": "extensions/Gay0dayScraper",
+      "tagPrefix": "gay0day-scraper/"
+    },
+    {
+      "name": "BoyfriendtvDownloader",
+      "id": "karinauts.downloaders.boyfriendtv",
+      "path": "extensions/BoyfriendtvDownloader",
+      "tagPrefix": "boyfriendtv-downloader/"
+    },
+    {
+      "name": "BoyfriendtvScraper",
+      "id": "karinauts.scrapers.boyfriendtv",
+      "path": "extensions/BoyfriendtvScraper",
+      "tagPrefix": "boyfriendtv-scraper/"
     }
   ]
 }

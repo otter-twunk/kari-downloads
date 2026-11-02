@@ -1,5 +1,11 @@
 <Solution>
   <Folder Name="/extensions/">
+    <Project Path="extensions/BoyfriendtvScraper/BoyfriendtvScraper.csproj" />
+    <Project Path="extensions/BoyfriendtvDownloader/BoyfriendtvDownloader.csproj" />
+    <Project Path="extensions/Gay0dayScraper/Gay0dayScraper.csproj" />
+    <Project Path="extensions/Gay0dayDownloader/Gay0dayDownloader.csproj" />
+    <Project Path="extensions/GayFappyScraper/GayFappyScraper.csproj" />
+    <Project Path="extensions/GayFappyDownloader/GayFappyDownloader.csproj" />
     <Project Path="extensions/JustTheGaysComScraper/JustTheGaysComScraper.csproj" />
     <Project Path="extensions/JustTheGaysTvScraper/JustTheGaysTvScraper.csproj" />
     <Project Path="extensions/JustTheGaysComDownloader/JustTheGaysComDownloader.csproj" />
