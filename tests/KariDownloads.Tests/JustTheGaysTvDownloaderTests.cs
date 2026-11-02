@@ -322,4 +322,16 @@ public sealed class JustTheGaysTvDownloaderTests
         var resolved = JustTheGaysTvDownloaderExtension.ResolveFfmpegPath(null);
         Assert.False(string.IsNullOrWhiteSpace(resolved));
     }
+
+    [Fact]
+    public void JustTheGaysTv_FfmpegArguments_ProbeDeeplyAndRequireVideo()
+    {
+        var args = new List<string>();
+        JustTheGaysTvDownloaderExtension.AddProbeArguments(args);
+        JustTheGaysTvDownloaderExtension.AddVideoMapArguments(args);
+
+        Assert.Equal(
+            ["-analyzeduration", "30000000", "-probesize", "50000000", "-map", "0:v:0", "-map", "0:a?"],
+            args);
+    }
 }
