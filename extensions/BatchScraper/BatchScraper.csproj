@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Cove host contracts (Cove.Sdk + Cove.Core) are referenced centrally and compile-only by
+       ..\..\Directory.Build.targets. Metadata lives in extension.json (copied centrally by
+       ..\..\Directory.Build.props). -->
+
+  <ItemGroup Condition="Exists('dist')">
+    <Content Include="dist\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

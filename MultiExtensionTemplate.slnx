@@ -8,6 +8,7 @@
     <Project Path="extensions/ExampleScraper/ExampleScraper.csproj" />
     <Project Path="extensions/ExampleUi/ExampleUi.csproj" />
     <Project Path="extensions/BatchDownloader/BatchDownloader.csproj" />
+    <Project Path="extensions/BatchScraper/BatchScraper.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/KariDownloads.Tests/KariDownloads.Tests.csproj" />

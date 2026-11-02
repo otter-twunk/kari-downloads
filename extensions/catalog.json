@@ -48,6 +48,12 @@
       "id": "karinauts.tools.batch-downloader",
       "path": "extensions/BatchDownloader",
       "tagPrefix": "batch-downloader/"
+    },
+    {
+      "name": "BatchScraper",
+      "id": "karinauts.tools.batch-scraper",
+      "path": "extensions/BatchScraper",
+      "tagPrefix": "batch-scraper/"
     }
   ]
 }
