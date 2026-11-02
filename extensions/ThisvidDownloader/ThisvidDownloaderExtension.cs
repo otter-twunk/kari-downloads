@@ -5,6 +5,7 @@ using Cove.Core.DTOs;
 using Cove.Plugins;
 using Cove.Sdk;
 using KariDownloads.Shared;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ThisvidDownloader;
@@ -16,7 +17,11 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
     private static readonly string[] SupportedDomains = ["thisvid.com"];
 
     private static readonly Regex VideoPathRegex = new(
-        @"^/(?:videos|embed)/",
+        @"^/(?:videos|embed|playlist/\d+/video)/",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex PlaylistVideoRegex = new(
+        @"^/playlist/\d+/video/(?<slug>[^/?#]+)/?$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex VideoIdRegex = new(
@@ -47,10 +52,6 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         @"<a\b[^>]*>(?<text>[^<]+)</a>",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly Regex FlashvarsBlockRegex = new(
-        @"(?is)(?:var\s+)?flashvars(?:\w*)\s*=\s*\{(?<content>.*?)\};",
-        RegexOptions.Compiled);
-
     private static readonly Regex FlashvarsPostfixRegex = new(
         @"(?is)postfix\s*:\s*['""](?<postfix>[^'""]+)['""]",
         RegexOptions.Compiled);
@@ -72,21 +73,24 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         RegexOptions.Compiled);
 
     private IServiceProvider? _services;
+    private IConfiguration? _configuration;
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
         PrimaryDownloaderId,
         "ThisVid Downloader",
         DownloaderEntity.Video,
-        ["https://thisvid.com/videos/*", "https://*.thisvid.com/videos/*", "https://thisvid.com/embed/*", "https://*.thisvid.com/embed/*"],
+        ["https://thisvid.com/*", "https://*.thisvid.com/*"],
         DownloaderCapabilities.InlineMetadata | DownloaderCapabilities.MultiQuality);
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+        _configuration = context.Configuration;
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _services = services;
+        _configuration ??= services.GetService<IConfiguration>();
         return Task.CompletedTask;
     }
 
@@ -97,7 +101,8 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         if (!IsSupportedUrl(url))
             return null;
 
-        var pageInfo = await TryInspectPageAsync(url, ct);
+        var normalizedUrl = NormalizeVideoUrl(url);
+        var pageInfo = await TryInspectPageAsync(normalizedUrl, ct);
         var qualityOptions = pageInfo?.Streams
             .Where(s => !string.IsNullOrWhiteSpace(s.QualityId))
             .Select(s => new DownloaderQualityOption(s.QualityId, s.Height != null ? $"{s.Height}p" : s.QualityId) { Height = s.Height })
@@ -106,9 +111,10 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
 
         return new DownloaderUrlMatch(
             PrimaryDescriptor.Id,
-            url,
+            normalizedUrl,
             QualityOptions: qualityOptions is { Count: > 0 } ? qualityOptions : null,
-            Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(url, "ThisVid Downloader"));
+            Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(normalizedUrl, "ThisVid Downloader"),
+            SourceUrl: url);
     }
 
     public async Task<DownloaderResult?> DownloadAsync(
@@ -122,11 +128,13 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         if (!IsSupportedUrl(request.Url))
             throw new InvalidOperationException($"Unsupported URL for ThisVid Downloader: {request.Url}");
 
+        var targetUrl = NormalizeVideoUrl(request.Url);
+
         host.ReportProgress(5.0, "Inspecting ThisVid media page...");
-        var pageInfo = await InspectPageAsync(request.Url, ct);
+        var pageInfo = await InspectPageAsync(targetUrl, ct);
 
         var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
-            ?? throw new InvalidOperationException($"Could not locate a suitable video stream for {request.Url}");
+            ?? throw new InvalidOperationException($"Could not locate a suitable video stream for {targetUrl}");
 
         var extension = DownloaderUtilities.EnsureExtensionFromUrl(selectedStream.VideoUrl, ".mp4");
         var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title) + extension;
@@ -136,6 +144,10 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         {
             ["Referer"] = pageInfo.PageUrl
         };
+
+        var cookie = GetConfiguredCookie(targetUrl);
+        if (!string.IsNullOrWhiteSpace(cookie))
+            headers["Cookie"] = cookie;
 
         host.ReportProgress(15.0, "Downloading video stream...");
         var localPath = await DownloaderUtilities.DownloadToTempFileAsync(
@@ -159,7 +171,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
                 Date = pageInfo.Date,
                 Details = pageInfo.Description,
                 ImageUrl = pageInfo.PosterUrl,
-                Urls = [request.SourceUrl ?? request.Url],
+                Urls = [request.SourceUrl ?? targetUrl],
                 StudioName = DefaultStudioName,
                 TagNames = pageInfo.TagNames
             });
@@ -176,6 +188,21 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         return VideoPathRegex.IsMatch(uri.AbsolutePath);
     }
 
+    public static string NormalizeVideoUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+            return url;
+
+        var playlistMatch = PlaylistVideoRegex.Match(uri.AbsolutePath);
+        if (playlistMatch.Success)
+        {
+            var slug = playlistMatch.Groups["slug"].Value;
+            return $"https://thisvid.com/videos/{slug}/";
+        }
+
+        return url;
+    }
+
     internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, CancellationToken ct)
     {
         try
@@ -190,14 +217,20 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
 
     internal async Task<ResolvedMediaPage> InspectPageAsync(string url, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        var targetUrl = NormalizeVideoUrl(url);
+        using var request = new HttpRequestMessage(HttpMethod.Get, targetUrl);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
+        request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+
+        var cookie = GetConfiguredCookie(targetUrl);
+        if (!string.IsNullOrWhiteSpace(cookie))
+            request.Headers.TryAddWithoutValidation("Cookie", cookie);
 
         using var response = await CreateHttpClient().SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
 
         var html = await response.Content.ReadAsStringAsync(ct);
-        return ParsePage(html, url);
+        return ParsePage(html, targetUrl);
     }
 
     public static ResolvedMediaPage ParsePage(string html, string url)
@@ -237,7 +270,18 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
 
         var streams = ExtractMediaStreams(html, url);
         if (streams.Count == 0)
+        {
+            if (html.Contains("Age verification required", StringComparison.OrdinalIgnoreCase)
+                || html.Contains("/age-verification/", StringComparison.OrdinalIgnoreCase)
+                || html.Contains("agegate", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"ThisVid displayed an age-verification gate for {url}. " +
+                    "Please configure your ThisVid cookie/session in Cove Settings (or extension settings) to bypass the age gate.");
+            }
+
             throw new InvalidOperationException($"Could not locate a direct media stream on {url}");
+        }
 
         var posterUrl = DownloaderUtilities.ExtractMetaContent(html, "og:image")
             ?? VideoPosterRegex.Match(html).Groups["url"].Value;
@@ -294,7 +338,6 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         if (postfixMatch.Success)
             postfix = postfixMatch.Groups["postfix"].Value.Trim();
 
-        // Flashvars keys to search: video_alt_url3, video_alt_url2, video_alt_url, video_url
         var qualityKeys = new[]
         {
             ("video_alt_url3", "video_alt_url3_text"),
@@ -419,7 +462,6 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
                 return matchingHeight;
         }
 
-        // Highest quality by height or first available stream
         return streams
             .OrderByDescending(s => s.Height ?? 0)
             .FirstOrDefault();
@@ -467,6 +509,25 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
             return relative.ToString();
 
         return null;
+    }
+
+    private string? GetConfiguredCookie(string url)
+    {
+        var loginProvider = _services?.GetService<IDownloaderSiteLoginProvider>();
+        var login = loginProvider?.FindForUrl(url);
+        if (login != null)
+        {
+            if (login.Password.Contains('=') || login.Password.Contains(';'))
+                return login.Password;
+            if (!string.IsNullOrWhiteSpace(login.Password))
+                return $"PHPSESSID={login.Password}";
+        }
+
+        var settingCookie = _configuration?["cookie"]
+            ?? _configuration?[$"{Id}:cookie"]
+            ?? _configuration?["ThisvidDownloader:cookie"];
+
+        return !string.IsNullOrWhiteSpace(settingCookie) ? settingCookie : null;
     }
 
     private HttpClient CreateHttpClient(IDownloaderHost? host = null)

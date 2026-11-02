@@ -1,7 +1,7 @@
 {
   "id": "karinauts.scrapers.thisvid",
   "name": "ThisVid Scraper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Scrapes video metadata and search candidates from thisvid.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
@@ -23,5 +23,13 @@
       "*.thisvid.com"
     ],
     "downloaderRuntime": []
-  }
+  },
+  "settings": [
+    {
+      "name": "cookie",
+      "type": "STRING",
+      "displayName": "Cookie Header",
+      "description": "Optional Cookie header value (e.g. PHPSESSID=... or age verification cookies) from your browser if ThisVid requires age verification."
+    }
+  ]
 }

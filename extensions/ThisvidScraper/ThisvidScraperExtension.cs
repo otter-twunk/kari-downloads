@@ -5,6 +5,7 @@ using Cove.Core.DTOs;
 using Cove.Plugins;
 using Cove.Sdk;
 using KariDownloads.Shared;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ThisvidScraper;
@@ -16,7 +17,11 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
     private static readonly string[] SupportedDomains = ["thisvid.com"];
 
     private static readonly Regex VideoPathRegex = new(
-        @"^/(?:videos|embed)/",
+        @"^/(?:videos|embed|playlist/\d+/video)/",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex PlaylistVideoRegex = new(
+        @"^/playlist/\d+/video/(?<slug>[^/?#]+)/?$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex VideoIdRegex = new(
@@ -52,21 +57,24 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
         RegexOptions.Compiled);
 
     private IServiceProvider? _services;
+    private IConfiguration? _configuration;
 
     private static readonly ScraperDescriptor PrimaryDescriptor = new(
         PrimaryScraperId,
         "ThisVid Scraper",
         ScraperEntity.Video,
         ScraperCapabilities.ByUrl | ScraperCapabilities.ByName,
-        ["thisvid.com/videos/", "thisvid.com/embed/"]);
+        ["thisvid.com/*"]);
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+        _configuration = context.Configuration;
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _services = services;
+        _configuration ??= services.GetService<IConfiguration>();
         return Task.CompletedTask;
     }
 
@@ -76,12 +84,18 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
         ScraperRequest<VideoScrapeInput> request,
         CancellationToken ct)
     {
-        var sourceUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
-        if (!IsSupportedUrl(sourceUrl))
+        var rawUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
+        if (!IsSupportedUrl(rawUrl))
             return null;
 
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), sourceUrl!, ct, GetDefaultHeaders());
-        return ParseVideoHtml(html, sourceUrl!, request.Input);
+        var sourceUrl = NormalizeVideoUrl(rawUrl!);
+        var headers = GetDefaultHeaders();
+        var cookie = GetConfiguredCookie(sourceUrl);
+        if (!string.IsNullOrWhiteSpace(cookie))
+            headers["Cookie"] = cookie;
+
+        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), sourceUrl, ct, headers);
+        return ParseVideoHtml(html, sourceUrl, request.Input);
     }
 
     public async Task<IReadOnlyList<ScrapedVideoDto>> SearchVideosAsync(
@@ -93,7 +107,12 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
             return [];
 
         var searchUrl = $"https://thisvid.com/search/?q={Uri.EscapeDataString(query)}";
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), searchUrl, ct, GetDefaultHeaders());
+        var headers = GetDefaultHeaders();
+        var cookie = GetConfiguredCookie(searchUrl);
+        if (!string.IsNullOrWhiteSpace(cookie))
+            headers["Cookie"] = cookie;
+
+        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), searchUrl, ct, headers);
         return ParseSearchResultsHtml(html, searchUrl);
     }
 
@@ -112,8 +131,32 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
         return VideoPathRegex.IsMatch(uri.AbsolutePath);
     }
 
+    public static string NormalizeVideoUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri))
+            return url;
+
+        var playlistMatch = PlaylistVideoRegex.Match(uri.AbsolutePath);
+        if (playlistMatch.Success)
+        {
+            var slug = playlistMatch.Groups["slug"].Value;
+            return $"https://thisvid.com/videos/{slug}/";
+        }
+
+        return url;
+    }
+
     internal static ScrapedVideoDto ParseVideoHtml(string html, string sourceUrl, VideoScrapeInput? fallbackInput = null)
     {
+        if (html.Contains("Age verification required", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("/age-verification/", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("agegate", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"ThisVid displayed an age-verification gate for {sourceUrl}. " +
+                "Please configure your ThisVid cookie/session in Cove Settings to bypass the age gate.");
+        }
+
         var structured = ScraperUtilities.ExtractStructuredMetadata(html, DefaultStudioName);
 
         // Title
@@ -274,6 +317,25 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
             ["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             ["Accept-Language"] = "en-US,en;q=0.9"
         };
+    }
+
+    private string? GetConfiguredCookie(string url)
+    {
+        var loginProvider = _services?.GetService<IDownloaderSiteLoginProvider>();
+        var login = loginProvider?.FindForUrl(url);
+        if (login != null)
+        {
+            if (login.Password.Contains('=') || login.Password.Contains(';'))
+                return login.Password;
+            if (!string.IsNullOrWhiteSpace(login.Password))
+                return $"PHPSESSID={login.Password}";
+        }
+
+        var settingCookie = _configuration?["cookie"]
+            ?? _configuration?[$"{Id}:cookie"]
+            ?? _configuration?["ThisvidScraper:cookie"];
+
+        return !string.IsNullOrWhiteSpace(settingCookie) ? settingCookie : null;
     }
 
     private HttpClient CreateHttpClient()

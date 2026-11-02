@@ -7,6 +7,7 @@ namespace KariDownloads.Tests;
 public sealed class ThisvidDownloaderTests
 {
     private const string VideoPageUrl = "https://thisvid.com/videos/fixture-thisvid-scene/";
+    private const string PlaylistPageUrl = "https://www.thisvid.com/playlist/385827/video/poppers-anal-training/";
     private const string Video1080Url = "https://media.thisvid.com/contents/videos/1000/1234/1234_1080p.mp4";
     private const string Video720Url = "https://media.thisvid.com/contents/videos/1000/1234/1234_720p.mp4";
 
@@ -58,15 +59,33 @@ public sealed class ThisvidDownloaderTests
         </html>
         """;
 
+    private const string AgeGateHtml = """
+        <!doctype html>
+        <html lang="en" class="html-locked">
+        <head>
+            <title>Age verification required</title>
+            <script>if (window.location.pathname !== '/age-verification/') {}</script>
+        </head>
+        <body>
+            <div class="agegate-container">Age verification required</div>
+        </body>
+        </html>
+        """;
+
     [Fact]
-    public void IsSupportedUrl_ValidatesUrlsAccurately()
+    public void IsSupportedUrl_And_NormalizeVideoUrl_HandleAllVariants()
     {
         Assert.True(ThisvidDownloaderExtension.IsSupportedUrl("https://thisvid.com/videos/fixture-thisvid-scene/"));
         Assert.True(ThisvidDownloaderExtension.IsSupportedUrl("https://www.thisvid.com/videos/12345/"));
         Assert.True(ThisvidDownloaderExtension.IsSupportedUrl("https://thisvid.com/embed/12345/"));
+        Assert.True(ThisvidDownloaderExtension.IsSupportedUrl("https://www.thisvid.com/playlist/385827/video/poppers-anal-training/"));
         Assert.False(ThisvidDownloaderExtension.IsSupportedUrl("https://thisvid.com/members/111/"));
         Assert.False(ThisvidDownloaderExtension.IsSupportedUrl("https://other.com/videos/12345/"));
         Assert.False(ThisvidDownloaderExtension.IsSupportedUrl("not-a-url"));
+
+        Assert.Equal(
+            "https://thisvid.com/videos/poppers-anal-training/",
+            ThisvidDownloaderExtension.NormalizeVideoUrl("https://www.thisvid.com/playlist/385827/video/poppers-anal-training/"));
     }
 
     [Fact]
@@ -87,6 +106,23 @@ public sealed class ThisvidDownloaderTests
         Assert.Contains(match.QualityOptions, q => q.Id == "1080p" && q.Height == 1080);
         Assert.Contains(match.QualityOptions, q => q.Id == "720p" && q.Height == 720);
         Assert.Contains(match.QualityOptions, q => q.Id == "480p" && q.Height == 480);
+    }
+
+    [Fact]
+    public async Task MatchAsync_NormalizesPlaylistUrls()
+    {
+        using var harness = new FakeDownloaderHost()
+            .MapHtml("https://thisvid.com/videos/poppers-anal-training/", RealisticThisvidHtml);
+
+        var extension = new ThisvidDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var match = await extension.MatchAsync(PlaylistPageUrl, CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.Equal(ThisvidDownloaderExtension.PrimaryDownloaderId, match.DownloaderId);
+        Assert.Equal("https://thisvid.com/videos/poppers-anal-training/", match.NormalizedUrl);
+        Assert.Equal(PlaylistPageUrl, match.SourceUrl);
     }
 
     [Fact]
@@ -123,6 +159,28 @@ public sealed class ThisvidDownloaderTests
         Assert.Contains("Amateurs", meta.TagNames);
         Assert.Contains("Anal", meta.TagNames);
         Assert.Contains("Blonde", meta.TagNames);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_ThrowsDescriptiveError_OnAgeVerificationGate()
+    {
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(VideoPageUrl, AgeGateHtml);
+
+        var extension = new ThisvidDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            extension.DownloadAsync(
+                new DownloaderRequest(
+                    ThisvidDownloaderExtension.PrimaryDownloaderId,
+                    VideoPageUrl,
+                    DownloaderEntity.Video,
+                    new DownloaderPermissions(["thisvid.com"])),
+                harness,
+                CancellationToken.None));
+
+        Assert.Contains("age-verification gate", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -8,6 +8,7 @@ namespace KariDownloads.Tests;
 public sealed class ThisvidScraperTests
 {
     private const string VideoUrl = "https://thisvid.com/videos/fixture-thisvid-scene/";
+    private const string PlaylistUrl = "https://www.thisvid.com/playlist/385827/video/poppers-anal-training/";
     private const string SearchUrl = "https://thisvid.com/search/?q=amateurs";
 
     private const string RealisticThisvidHtml = """
@@ -66,15 +67,33 @@ public sealed class ThisvidScraperTests
         </html>
         """;
 
+    private const string AgeGateHtml = """
+        <!doctype html>
+        <html lang="en" class="html-locked">
+        <head>
+            <title>Age verification required</title>
+            <script>if (window.location.pathname !== '/age-verification/') {}</script>
+        </head>
+        <body>
+            <div class="agegate-container">Age verification required</div>
+        </body>
+        </html>
+        """;
+
     [Fact]
-    public void IsSupportedUrl_ValidatesUrlsAccurately()
+    public void IsSupportedUrl_And_NormalizeVideoUrl_HandleAllVariants()
     {
         Assert.True(ThisvidScraperExtension.IsSupportedUrl("https://thisvid.com/videos/fixture-thisvid-scene/"));
         Assert.True(ThisvidScraperExtension.IsSupportedUrl("https://www.thisvid.com/videos/12345/"));
         Assert.True(ThisvidScraperExtension.IsSupportedUrl("https://thisvid.com/embed/12345/"));
+        Assert.True(ThisvidScraperExtension.IsSupportedUrl("https://www.thisvid.com/playlist/385827/video/poppers-anal-training/"));
         Assert.False(ThisvidScraperExtension.IsSupportedUrl("https://thisvid.com/members/111/"));
         Assert.False(ThisvidScraperExtension.IsSupportedUrl("https://other.com/videos/12345/"));
         Assert.False(ThisvidScraperExtension.IsSupportedUrl("not-a-url"));
+
+        Assert.Equal(
+            "https://thisvid.com/videos/poppers-anal-training/",
+            ThisvidScraperExtension.NormalizeVideoUrl(PlaylistUrl));
     }
 
     [Fact]
@@ -103,6 +122,26 @@ public sealed class ThisvidScraperTests
         Assert.Contains("Amateurs", scraped.TagNames);
         Assert.Contains("Anal", scraped.TagNames);
         Assert.Contains("Blonde", scraped.TagNames);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_ThrowsDescriptiveError_OnAgeVerificationGate()
+    {
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(VideoUrl, AgeGateHtml);
+
+        var extension = new ThisvidScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            extension.ScrapeVideoAsync(
+                new ScraperRequest<VideoScrapeInput>(
+                    ThisvidScraperExtension.PrimaryScraperId,
+                    new VideoScrapeInput { Url = VideoUrl },
+                    new ScraperPermissions(["thisvid.com"])),
+                CancellationToken.None));
+
+        Assert.Contains("age-verification gate", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
