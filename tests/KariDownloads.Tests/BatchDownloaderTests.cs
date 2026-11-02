@@ -52,7 +52,7 @@ public sealed class BatchDownloaderTests
 
         Assert.Equal("karinauts.tools.batch-downloader", root.GetProperty("id").GetString());
         Assert.Equal("Batch URL Downloader", root.GetProperty("name").GetString());
-        Assert.Equal("0.1.0", root.GetProperty("version").GetString());
+        Assert.Equal("0.1.1", root.GetProperty("version").GetString());
         Assert.Equal("BatchDownloader.dll", root.GetProperty("entryDll").GetString());
         Assert.Equal("dist/bundle.js", root.GetProperty("jsBundle").GetString());
         Assert.Equal("dist/bundle.css", root.GetProperty("cssBundle").GetString());
@@ -62,5 +62,33 @@ public sealed class BatchDownloaderTests
         Assert.Contains("ui", categories);
         Assert.Contains("tools", categories);
         Assert.Contains("content-management", categories);
+    }
+
+    [Fact]
+    public void Extension_Implements_IApiExtension()
+    {
+        var extension = CreateExtension();
+        Assert.IsAssignableFrom<IApiExtension>(extension);
+    }
+
+    [Fact]
+    public void ExtractUrls_ParsesAndDeduplicatesUrlsCorrectly()
+    {
+        const string rawText = """
+            Here are some links from iOS:
+            https://site.com/video1,
+            [Markdown Link](https://site.com/video2)
+            Check out https://site.com/video1 again.
+            Also an invalid one: not_a_url and ftp://unsupported.com
+            """;
+
+        var explicitUrls = new[] { "https://site.com/video3", "https://site.com/video1" };
+
+        var extracted = BatchDownloaderExtension.ExtractUrls(rawText, explicitUrls);
+
+        Assert.Equal(3, extracted.Count);
+        Assert.Contains("https://site.com/video1", extracted);
+        Assert.Contains("https://site.com/video2", extracted);
+        Assert.Contains("https://site.com/video3", extracted);
     }
 }
