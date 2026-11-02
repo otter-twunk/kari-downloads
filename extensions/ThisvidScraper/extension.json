@@ -1,0 +1,27 @@
+{
+  "id": "karinauts.scrapers.thisvid",
+  "name": "ThisVid Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes video metadata and search candidates from thisvid.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "scraper",
+    "metadata",
+    "video"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "ThisvidScraper.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "thisvid.com",
+      "*.thisvid.com"
+    ],
+    "scraperRuntime": [
+      "thisvid.com",
+      "*.thisvid.com"
+    ],
+    "downloaderRuntime": []
+  }
+}

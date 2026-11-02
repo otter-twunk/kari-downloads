@@ -1,0 +1,27 @@
+{
+  "id": "karinauts.downloaders.thisvid",
+  "name": "ThisVid Downloader",
+  "version": "0.1.0",
+  "description": "Downloads video media and inline metadata from thisvid.com.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "metadata"
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "ThisvidDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "thisvid.com",
+      "*.thisvid.com"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "thisvid.com",
+      "*.thisvid.com"
+    ]
+  }
+}

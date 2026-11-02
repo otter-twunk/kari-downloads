@@ -1,5 +1,7 @@
 <Solution>
   <Folder Name="/extensions/">
+    <Project Path="extensions/ThisvidScraper/ThisvidScraper.csproj" />
+    <Project Path="extensions/ThisvidDownloader/ThisvidDownloader.csproj" />
     <Project Path="extensions/GayporntubeScraper/GayporntubeScraper.csproj" />
     <Project Path="extensions/GayporntubeDownloader/GayporntubeDownloader.csproj" />
     <Project Path="extensions/BoyfriendtvScraper/BoyfriendtvScraper.csproj" />

@@ -102,6 +102,18 @@
       "id": "karinauts.scrapers.gayporntube",
       "path": "extensions/GayporntubeScraper",
       "tagPrefix": "gayporntube-scraper/"
+    },
+    {
+      "name": "ThisvidDownloader",
+      "id": "karinauts.downloaders.thisvid",
+      "path": "extensions/ThisvidDownloader",
+      "tagPrefix": "thisvid-downloader/"
+    },
+    {
+      "name": "ThisvidScraper",
+      "id": "karinauts.scrapers.thisvid",
+      "path": "extensions/ThisvidScraper",
+      "tagPrefix": "thisvid-scraper/"
     }
   ]
 }
