@@ -512,7 +512,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
         Directory.CreateDirectory(host.TempDirectory);
         host.ReportProgress(8.0, "Fetching HLS playlist manifest...");
 
-        var manifestText = await FetchHtmlWithRetryAsync(client, m3u8Url, ct, headers);
+        var manifestText = await FetchManifestWithRetryAsync(client, m3u8Url, ct, headers);
         var activePlaylistUrl = m3u8Url;
 
         if (manifestText.Contains("#EXT-X-STREAM-INF", StringComparison.OrdinalIgnoreCase))
@@ -521,7 +521,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             if (!string.IsNullOrWhiteSpace(variantUrl))
             {
                 activePlaylistUrl = variantUrl;
-                manifestText = await FetchHtmlWithRetryAsync(client, activePlaylistUrl, ct, headers);
+                manifestText = await FetchManifestWithRetryAsync(client, activePlaylistUrl, ct, headers);
             }
         }
 
@@ -583,8 +583,13 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
 
             var headerSb = new StringBuilder();
             headerSb.Append($"User-Agent: {DownloaderUtilities.DefaultUserAgent}\r\n");
+            headerSb.Append("Origin: https://justthegays.tv\r\n");
+            headerSb.Append("Referer: https://justthegays.tv/\r\n");
             foreach (var (k, v) in headers)
-                headerSb.Append($"{k}: {v}\r\n");
+            {
+                if (!k.Equals("Origin", StringComparison.OrdinalIgnoreCase) && !k.Equals("Referer", StringComparison.OrdinalIgnoreCase))
+                    headerSb.Append($"{k}: {v}\r\n");
+            }
 
             psi.ArgumentList.Add("-headers");
             psi.ArgumentList.Add(headerSb.ToString());
@@ -735,6 +740,9 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                 using var request = new HttpRequestMessage(HttpMethod.Get, segmentUrl);
                 request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
                 request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+                request.Headers.TryAddWithoutValidation("Origin", "https://justthegays.tv");
+                request.Headers.TryAddWithoutValidation("Referer", "https://justthegays.tv/");
+                request.Headers.TryAddWithoutValidation("Accept", "*/*");
                 foreach (var (key, value) in headers)
                     request.Headers.TryAddWithoutValidation(key, value);
 
@@ -808,6 +816,9 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                 using var request = new HttpRequestMessage(HttpMethod.Get, mediaUrl);
                 request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
                 request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+                request.Headers.TryAddWithoutValidation("Origin", "https://justthegays.tv");
+                request.Headers.TryAddWithoutValidation("Referer", "https://justthegays.tv/");
+                request.Headers.TryAddWithoutValidation("Accept", "*/*");
                 foreach (var (k, v) in headers)
                     request.Headers.TryAddWithoutValidation(k, v);
 
@@ -863,6 +874,66 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
         }
 
         throw new InvalidOperationException($"Failed to download direct media stream after 4 attempts from {mediaUrl}: {lastEx?.Message}", lastEx);
+    }
+
+    private static async Task<string> FetchManifestWithRetryAsync(
+        HttpClient client,
+        string url,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? headers = null)
+    {
+        Exception? lastEx = null;
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (attempt > 1)
+            {
+                var delay = (400 * (1 << (attempt - 1))) + Random.Shared.Next(50, 200);
+                await Task.Delay(delay, ct);
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
+                request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+                request.Headers.TryAddWithoutValidation("Accept", "application/x-mpegURL, application/vnd.apple.mpegurl, */*");
+                request.Headers.TryAddWithoutValidation("Origin", "https://justthegays.tv");
+                request.Headers.TryAddWithoutValidation("Referer", "https://justthegays.tv/");
+                request.Headers.TryAddWithoutValidation("sec-fetch-dest", "empty");
+                request.Headers.TryAddWithoutValidation("sec-fetch-mode", "cors");
+                request.Headers.TryAddWithoutValidation("sec-fetch-site", "cross-site");
+
+                if (headers != null)
+                {
+                    foreach (var (k, v) in headers)
+                        request.Headers.TryAddWithoutValidation(k, v);
+                }
+
+                using var response = await client.SendAsync(request, ct);
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 2.0;
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(retryAfter, 8.0)), ct);
+                    continue;
+                }
+
+                if ((int)response.StatusCode is >= 500 and <= 504)
+                    continue;
+
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync(ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or TimeoutException)
+            {
+                lastEx = ex;
+            }
+        }
+
+        throw new InvalidOperationException($"Failed to fetch HLS manifest from {url} after 3 attempts: {lastEx?.Message}", lastEx);
     }
 
     private static async Task<string> FetchHtmlWithRetryAsync(

@@ -1,7 +1,7 @@
 {
   "id": "karinauts.downloaders.just-the-gays-tv",
   "name": "JustTheGays.tv Downloader",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Downloads video scenes and clips with inline metadata from justthegays.tv.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
