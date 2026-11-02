@@ -294,4 +294,116 @@ public sealed class JustTheGaysTvScraperTests
         Assert.Equal(["Bareback"], scraped.TagNames);
         Assert.DoesNotContain("Random Model", scraped.PerformerNames);
     }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_ClipWithBootstrapPerformersAndCategories_ExtractsFullMetadata()
+    {
+        const string pageUrl = "https://justthegays.tv/p6916/clip/9mxPTAL3qskf";
+        const string clipHtml = """
+            <!doctype html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "Mattstandingjerk",
+                  "description": "Get off while streaming Matt Dubbe in the sexy new video \"Mattstandingjerk\". This video has plenty of wild Solo action that will make you hard and horny. Find it here on JustTheGays - justthegays.tv, the best free amateur gay porn and OnlyFans streaming site of 2026",
+                  "thumbnailUrl": "https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.jpg",
+                  "uploadDate": "2026-08-24T03:01:49.934Z",
+                  "duration": "PT12S",
+                  "contentUrl": "https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.mp4"
+                }
+                </script>
+            </head>
+            <body>
+                <script>
+                    kit.start(app, element, { data: [{}, {data:{clip:{id:"9mxPTAL3qskf",title:"Mattstandingjerk",url:"https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.mp4",duration:12.12,readyAt:"2026-08-24T03:01:49.934Z",performers:[{id:"matt-dubbe",name:"Matt Dubbe",slug:"matt-dubbe-225"}],categories:[{id:"solo",name:"Solo"},{id:"jerk-off",name:"Jerk Off"}]},siblings:[],pindex:"p6916"}}] });
+                </script>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, clipHtml);
+
+        var extension = new JustTheGaysTvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                JustTheGaysTvScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = pageUrl },
+                new ScraperPermissions(["justthegays.tv"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Mattstandingjerk", scraped.Title);
+        Assert.Equal("9mxPTAL3qskf", scraped.Code);
+        Assert.Equal("2026-08-24", scraped.Date);
+        Assert.Equal(["Matt Dubbe"], scraped.PerformerNames);
+        Assert.Equal(["Solo", "Jerk Off"], scraped.TagNames);
+        Assert.DoesNotContain("Get off while streaming", scraped.Details ?? string.Empty);
+    }
+
+    [Fact]
+    public async Task SearchVideosAsync_EnrichesResultsWithSvelteSearchData()
+    {
+        const string searchUrl = "https://justthegays.tv/search?q=alex";
+        const string searchHtml = """
+            <!doctype html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "SearchResultsPage",
+                  "mainEntity": {
+                    "@type": "ItemList",
+                    "itemListElement": [
+                      {
+                        "@type": "ListItem",
+                        "position": 1,
+                        "item": {
+                          "@type": "VideoObject",
+                          "name": "Alex Kof fucked by JJ Knight",
+                          "url": "https://justthegays.tv/video/alex-kof-fucked-by-jj-knight-mlfud",
+                          "thumbnailUrl": "https://cdn.gff.network/thumbnails/alex-kof.jpg",
+                          "uploadDate": "2026-07-14T22:05:33.851Z",
+                          "description": "Hot scene"
+                        }
+                      }
+                    ]
+                  }
+                }
+                </script>
+            </head>
+            <body>
+                <script>
+                    videos:[{id:"123",slug:"alex-kof-fucked-by-jj-knight-mlfud",title:"Alex Kof – fucked by JJ Knight",jtg_title:"Alex Kof fucked by JJ Knight",thumbnail:"2026/07/alex.jpg",upload_date:"2026-07-14T22:05:33.851Z",category_names:["Anal","Bareback","Muscle"],performer_names:["Alex Kof","JJ Knight"]}],currentPage:1
+                </script>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchUrl, searchHtml);
+
+        var extension = new JustTheGaysTvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var results = await extension.SearchVideosAsync(
+            new ScraperRequest<string>(
+                JustTheGaysTvScraperExtension.VideoScraperId,
+                "alex",
+                new ScraperPermissions(["justthegays.tv"])),
+            CancellationToken.None);
+
+        Assert.Single(results);
+        var first = results[0];
+        Assert.Equal("Alex Kof fucked by JJ Knight", first.Title);
+        Assert.Equal("mlfud", first.Code);
+        Assert.Equal(["Alex Kof", "JJ Knight"], first.PerformerNames);
+        Assert.Equal(["Anal", "Bareback", "Muscle"], first.TagNames);
+    }
 }

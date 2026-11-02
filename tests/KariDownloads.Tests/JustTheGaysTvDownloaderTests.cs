@@ -256,4 +256,70 @@ public sealed class JustTheGaysTvDownloaderTests
         Assert.DoesNotContain("Extra Performer 1", meta.PerformerNames);
         Assert.DoesNotContain("Extra Performer 35", meta.PerformerNames);
     }
+
+    [Fact]
+    public async Task JustTheGaysTv_ClipWithBootstrapPerformersAndCategories_ExtractsFullMetadata()
+    {
+        const string clipUrl = "https://justthegays.tv/p6916/clip/9mxPTAL3qskf";
+        const string clipMp4Url = "https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.mp4";
+        const string clipHtml = """
+            <!doctype html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "Mattstandingjerk",
+                  "description": "Get off while streaming Matt Dubbe in the sexy new video \"Mattstandingjerk\". This video has plenty of wild Solo action that will make you hard. Find it here on JustTheGays - justthegays.tv",
+                  "thumbnailUrl": "https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.jpg",
+                  "uploadDate": "2026-08-24T03:01:49.934Z",
+                  "duration": "PT12S",
+                  "contentUrl": "https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.mp4"
+                }
+                </script>
+            </head>
+            <body>
+                <script>
+                    kit.start(app, element, { data: [{}, {data:{clip:{id:"9mxPTAL3qskf",title:"Mattstandingjerk",url:"https://cdn.gff.network/019e29e2/clips/2026-08/9mxPTAL3qskf.mp4",duration:12.12,performers:[{id:"matt-dubbe",name:"Matt Dubbe",slug:"matt-dubbe-225"}],categories:[{id:"solo",name:"Solo"},{id:"jerk-off",name:"Jerk Off"}]},siblings:[],pindex:"p6916"}}] });
+                </script>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(clipUrl, clipHtml)
+            .MapBytes(clipMp4Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new JustTheGaysTvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var match = await extension.MatchAsync(clipUrl, CancellationToken.None);
+        Assert.NotNull(match);
+        Assert.Equal("Mattstandingjerk", match.Label);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                JustTheGaysTvDownloaderExtension.PrimaryDownloaderId,
+                clipUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["justthegays.tv", "cdn.gff.network"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        var meta = result.InlineVideoMetadata;
+        Assert.NotNull(meta);
+        Assert.Equal("Mattstandingjerk", meta.Title);
+        Assert.Equal(["Matt Dubbe"], meta.PerformerNames);
+        Assert.Equal(["Solo", "Jerk Off"], meta.TagNames);
+        Assert.DoesNotContain("Get off while streaming", meta.Details ?? string.Empty);
+    }
+
+    [Fact]
+    public void JustTheGaysTv_FfmpegPathResolver_ResolvesExecutable()
+    {
+        var resolved = JustTheGaysTvDownloaderExtension.ResolveFfmpegPath(null);
+        Assert.False(string.IsNullOrWhiteSpace(resolved));
+    }
 }

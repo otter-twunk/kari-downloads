@@ -1,7 +1,7 @@
 {
   "id": "karinauts.scrapers.just-the-gays-tv",
   "name": "JustTheGays.tv Scraper",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Scrapes video and performer metadata and search candidates from justthegays.tv.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",

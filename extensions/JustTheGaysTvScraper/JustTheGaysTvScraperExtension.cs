@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
@@ -33,6 +34,10 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
         @"video:\{(?<video>.*?)\},(?:inQuickies|related):",
         RegexOptions.Singleline | RegexOptions.Compiled);
 
+    private static readonly Regex TvBootstrapClipRegex = new(
+        @"clip:\{(?<clip>.*?)\},(?:siblings|pindex|related|uses):",
+        RegexOptions.Singleline | RegexOptions.Compiled);
+
     private static readonly Regex TvPerformerSpanRegex = new(
         @"(?is)<span\b[^>]*\bclass\s*=\s*['""][^'""]*performer-with-follow[^'""]*['""][^>]*>\s*<a\b[^>]*href\s*=\s*['""][^'""]*/performer/[^'""]+['""][^>]*>(?<name>.*?)</a>",
         RegexOptions.Compiled);
@@ -56,6 +61,12 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
     private static readonly Regex TvAnchorCategoryRegex = new(
         @"(?is)<a\b[^>]*href\s*=\s*['""][^'""]*/(?:p\d+/)?category/[^'""]+['""][^>]*>(?<name>.*?)</a>",
         RegexOptions.Compiled);
+
+    private readonly ConcurrentDictionary<string, (ScrapedVideoDto Video, DateTime Expiry)> _videoCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly ConcurrentDictionary<string, (ScrapedPerformerDto Performer, DateTime Expiry)> _performerCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private IServiceProvider? _services;
 
@@ -94,8 +105,13 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             return null;
 
         var normalizedUrl = NormalizeVideoUrl(sourceUrl!);
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), normalizedUrl, ct);
-        return ParseVideoHtml(html, normalizedUrl, request.Input);
+        if (_videoCache.TryGetValue(normalizedUrl, out var entry) && entry.Expiry > DateTime.UtcNow)
+            return entry.Video;
+
+        var html = await FetchHtmlWithRetryAsync(CreateHttpClient(), normalizedUrl, ct);
+        var parsed = ParseVideoHtml(html, normalizedUrl, request.Input);
+        _videoCache[normalizedUrl] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        return parsed;
     }
 
     public async Task<IReadOnlyList<ScrapedVideoDto>> SearchVideosAsync(
@@ -107,7 +123,7 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             return [];
 
         var searchUrl = $"https://justthegays.tv/search?q={Uri.EscapeDataString(query)}";
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), searchUrl, ct);
+        var html = await FetchHtmlWithRetryAsync(CreateHttpClient(), searchUrl, ct);
         return ParseSearchResultsHtml(html, searchUrl);
     }
 
@@ -119,8 +135,14 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
         if (!IsSupportedPerformerUrl(sourceUrl))
             return null;
 
-        var html = await ScraperUtilities.FetchHtmlAsync(CreateHttpClient(), sourceUrl!, ct);
-        return ParsePerformerHtml(html, sourceUrl!, request.Input);
+        var normalizedUrl = sourceUrl!.Trim();
+        if (_performerCache.TryGetValue(normalizedUrl, out var entry) && entry.Expiry > DateTime.UtcNow)
+            return entry.Performer;
+
+        var html = await FetchHtmlWithRetryAsync(CreateHttpClient(), normalizedUrl, ct);
+        var parsed = ParsePerformerHtml(html, normalizedUrl, request.Input);
+        _performerCache[normalizedUrl] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        return parsed;
     }
 
     public static bool IsSupportedVideoUrl(string? url)
@@ -158,7 +180,12 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             if (kind == "embed")
                 return $"https://justthegays.tv/video/{slug}";
             if (kind == "clip")
-                return $"https://justthegays.tv/clip/{slug}";
+            {
+                var pMatch = Regex.Match(uri.AbsolutePath, @"^/(p\d+)/");
+                return pMatch.Success
+                    ? $"https://justthegays.tv/{pMatch.Groups[1].Value}/clip/{slug}"
+                    : $"https://justthegays.tv/clip/{slug}";
+            }
             return $"https://justthegays.tv/video/{slug}";
         }
 
@@ -205,6 +232,37 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             if (performersMatch.Success)
             {
                 foreach (Match nameMatch in Regex.Matches(performersMatch.Groups["items"].Value, @"name\s*:\s*""(?<val>(?:[^""\\]|\\.)+)"""))
+                {
+                    var name = Regex.Unescape(nameMatch.Groups["val"].Value).Trim();
+                    if (!string.IsNullOrWhiteSpace(name) && !name.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+                        performers.Add(name);
+                }
+            }
+        }
+
+        var clipMatch = TvBootstrapClipRegex.Match(html);
+        if (clipMatch.Success)
+        {
+            var clipBlock = clipMatch.Groups["clip"].Value;
+
+            title ??= ExtractJsStringProperty(clipBlock, "title");
+            date ??= ScraperUtilities.NormalizeIsoDate(
+                ExtractJsStringProperty(clipBlock, "readyAt")
+                ?? ExtractJsStringProperty(clipBlock, "createdAt"));
+
+            var clipCategoriesMatch = Regex.Match(clipBlock, @"categories\s*:\s*\[(?<items>.*?)\]", RegexOptions.Singleline);
+            if (clipCategoriesMatch.Success)
+            {
+                foreach (Match nameMatch in Regex.Matches(clipCategoriesMatch.Groups["items"].Value, @"name\s*:\s*""(?<val>(?:[^""\\]|\\.)+)"""))
+                {
+                    tags.Add(Regex.Unescape(nameMatch.Groups["val"].Value));
+                }
+            }
+
+            var clipPerformersMatch = Regex.Match(clipBlock, @"performers\s*:\s*\[(?<items>.*?)\]", RegexOptions.Singleline);
+            if (clipPerformersMatch.Success)
+            {
+                foreach (Match nameMatch in Regex.Matches(clipPerformersMatch.Groups["items"].Value, @"name\s*:\s*""(?<val>(?:[^""\\]|\\.)+)"""))
                 {
                     var name = Regex.Unescape(nameMatch.Groups["val"].Value).Trim();
                     if (!string.IsNullOrWhiteSpace(name) && !name.Equals("unknown", StringComparison.OrdinalIgnoreCase))
@@ -300,6 +358,9 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
         var results = new List<ScrapedVideoDto>();
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        // Parse performer/category mappings from SvelteKit search data if available
+        var svelteInfo = ExtractSvelteSearchItems(html);
+
         // First check JSON-LD SearchResultsPage / ItemList
         foreach (var doc in DownloaderUtilities.ExtractJsonLdBlocks(html))
         {
@@ -336,15 +397,20 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
                                         : $"https://static.jtg.network/thumbnails/{rel}";
                                 }
 
+                                var code = ExtractTvCode(url);
+                                svelteInfo.TryGetValue(code ?? string.Empty, out var extra);
+
                                 results.Add(new ScrapedVideoDto
                                 {
                                     SourceScraperId = VideoScraperId,
                                     Title = CleanTvTitle(name) ?? name,
-                                    Code = ExtractTvCode(url),
-                                    Date = ScraperUtilities.NormalizeIsoDate(TryGetJsonString(item, "uploadDate")),
+                                    Code = code,
+                                    Date = ScraperUtilities.NormalizeIsoDate(TryGetJsonString(item, "uploadDate")) ?? extra?.Date,
                                     Details = CleanTvDetails(TryGetJsonString(item, "description")),
-                                    ImageUrl = thumb,
+                                    ImageUrl = thumb ?? extra?.ImageUrl,
                                     StudioName = DefaultStudioName,
+                                    PerformerNames = extra?.PerformerNames != null ? [.. extra.PerformerNames] : [],
+                                    TagNames = extra?.TagNames != null ? [.. extra.TagNames] : [],
                                     Urls = [url]
                                 });
                             }
@@ -356,6 +422,31 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
 
         if (results.Count > 0)
             return results;
+
+        // If JSON-LD wasn't present, check if SvelteKit items gave full results
+        if (svelteInfo.Count > 0)
+        {
+            foreach (var (_, item) in svelteInfo)
+            {
+                if (seenUrls.Add(item.Url))
+                {
+                    results.Add(new ScrapedVideoDto
+                    {
+                        SourceScraperId = VideoScraperId,
+                        Title = item.Title,
+                        Code = item.Code,
+                        Date = item.Date,
+                        ImageUrl = item.ImageUrl,
+                        StudioName = DefaultStudioName,
+                        PerformerNames = [.. item.PerformerNames],
+                        TagNames = [.. item.TagNames],
+                        Urls = [item.Url]
+                    });
+                }
+            }
+            if (results.Count > 0)
+                return results;
+        }
 
         // Fallback: parse video cards/links from HTML
         foreach (Match match in Regex.Matches(html, @"(?is)<a\b[^>]*href\s*=\s*['""](?<href>/(?:video|clip)/[^'""]+)['""][^>]*>(?<inner>.*?)</a>"))
@@ -381,6 +472,82 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
 
         return results;
     }
+
+    private static Dictionary<string, SvelteSearchMeta> ExtractSvelteSearchItems(string html)
+    {
+        var map = new Dictionary<string, SvelteSearchMeta>(StringComparer.OrdinalIgnoreCase);
+
+        var match = Regex.Match(html, @"videos\s*:\s*\[(?<items>.*?)\]\s*,\s*currentPage:", RegexOptions.Singleline);
+        if (!match.Success)
+            return map;
+
+        var itemsContent = match.Groups["items"].Value;
+        var itemMatches = Regex.Matches(itemsContent, @"\{id:""(?<id>[^""]+)"",slug:""(?<slug>[^""]+)"".*?\}", RegexOptions.Singleline);
+
+        foreach (Match itemMatch in itemMatches)
+        {
+            var block = itemMatch.Value;
+            var slug = ExtractJsStringProperty(block, "slug");
+            if (string.IsNullOrWhiteSpace(slug))
+                continue;
+
+            var title = ExtractJsStringProperty(block, "jtg_title")
+                ?? ExtractJsStringProperty(block, "title");
+            var date = ScraperUtilities.NormalizeIsoDate(ExtractJsStringProperty(block, "upload_date"));
+
+            var thumb = ExtractJsStringProperty(block, "thumbnail");
+            string? thumbUrl = null;
+            if (!string.IsNullOrWhiteSpace(thumb))
+            {
+                var rel = thumb.TrimStart('/');
+                thumbUrl = rel.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                    ? rel
+                    : $"https://static.jtg.network/thumbnails/{rel}";
+            }
+
+            var performers = new List<string>();
+            var perfMatch = Regex.Match(block, @"performer_names\s*:\s*\[(?<pnames>.*?)\]");
+            if (perfMatch.Success)
+            {
+                foreach (Match nm in Regex.Matches(perfMatch.Groups["pnames"].Value, @"""(?<val>(?:[^""\\]|\\.)+)"""))
+                    performers.Add(Regex.Unescape(nm.Groups["val"].Value).Trim());
+            }
+
+            var tags = new List<string>();
+            var catMatch = Regex.Match(block, @"category_names\s*:\s*\[(?<cnames>.*?)\]");
+            if (catMatch.Success)
+            {
+                foreach (Match cm in Regex.Matches(catMatch.Groups["cnames"].Value, @"""(?<val>(?:[^""\\]|\\.)+)"""))
+                    tags.Add(Regex.Unescape(cm.Groups["val"].Value).Trim());
+            }
+
+            var fullUrl = $"https://justthegays.tv/video/{slug}";
+            var code = ExtractTvCode(fullUrl) ?? slug;
+
+            var meta = new SvelteSearchMeta(
+                fullUrl,
+                code,
+                CleanTvTitle(title) ?? slug,
+                date,
+                thumbUrl,
+                ScraperUtilities.DeduplicateStrings(performers),
+                ScraperUtilities.DeduplicateStrings(tags));
+
+            map[code] = meta;
+            map[slug] = meta;
+        }
+
+        return map;
+    }
+
+    private sealed record SvelteSearchMeta(
+        string Url,
+        string Code,
+        string Title,
+        string? Date,
+        string? ImageUrl,
+        IReadOnlyList<string> PerformerNames,
+        IReadOnlyList<string> TagNames);
 
     internal static ScrapedPerformerDto ParsePerformerHtml(string html, string pageUrl, PerformerScrapeInput? fallbackInput = null)
     {
@@ -505,9 +672,11 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
             return null;
 
         text = Regex.Replace(text, @"\s+Find it here on JustTheGays.*$", string.Empty, RegexOptions.IgnoreCase);
-        text = Regex.Replace(text, @"^Get off while streaming .*? in the (?:steamy|erotic|hot) new video [""“].*?[""”]\.?\s*", string.Empty, RegexOptions.IgnoreCase);
-        text = Regex.Replace(text, @"(?:^|\s+)This video has plenty of (?:amazing|exciting|mind-blowing) .*? action that will .*?\.(?:\s+|$)", " ", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"^Get off while streaming .*? in the (?:steamy|erotic|hot|sexy|wild|insane|horny|sensual|naughty|mind-blowing) new video [""“].*?[""”]\.?\s*", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"(?:^|\s+)This video has plenty of (?:amazing|exciting|mind-blowing|wild|insane|hot|unbelievable|raw|intense|steamy) .*? action that will .*?\.(?:\s+|$)", " ", RegexOptions.IgnoreCase);
         text = Regex.Replace(text, @"\s*Stream '.*?' and more hot .*?$", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\s*Watch all \d+ .*? videos streaming .*?$", string.Empty, RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"\s*All \d+ .*? scenes stream free .*?$", string.Empty, RegexOptions.IgnoreCase);
         return ScraperUtilities.CleanText(text);
     }
 
@@ -547,6 +716,68 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
         }
 
         return null;
+    }
+
+    private static async Task<string> FetchHtmlWithRetryAsync(
+        HttpClient client,
+        string url,
+        CancellationToken ct,
+        IReadOnlyDictionary<string, string>? headers = null)
+    {
+        Exception? lastEx = null;
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (attempt > 1)
+            {
+                var delay = (400 * (1 << (attempt - 1))) + Random.Shared.Next(50, 200);
+                await Task.Delay(delay, ct);
+            }
+
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
+                request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+                request.Headers.TryAddWithoutValidation("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
+                request.Headers.TryAddWithoutValidation("sec-ch-ua", "\"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"");
+                request.Headers.TryAddWithoutValidation("sec-ch-ua-mobile", "?0");
+                request.Headers.TryAddWithoutValidation("sec-ch-ua-platform", "\"macOS\"");
+                request.Headers.TryAddWithoutValidation("sec-fetch-dest", "document");
+                request.Headers.TryAddWithoutValidation("sec-fetch-mode", "navigate");
+                request.Headers.TryAddWithoutValidation("sec-fetch-site", "none");
+                request.Headers.TryAddWithoutValidation("upgrade-insecure-requests", "1");
+
+                if (headers != null)
+                {
+                    foreach (var (k, v) in headers)
+                        request.Headers.TryAddWithoutValidation(k, v);
+                }
+
+                using var response = await client.SendAsync(request, ct);
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    var retryAfter = response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 2.0;
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(retryAfter, 8.0)), ct);
+                    continue;
+                }
+
+                if ((int)response.StatusCode is >= 500 and <= 504)
+                    continue;
+
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync(ct);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or TimeoutException)
+            {
+                lastEx = ex;
+            }
+        }
+
+        throw new InvalidOperationException($"Failed to fetch HTML from {url} after 3 attempts: {lastEx?.Message}", lastEx);
     }
 
     private HttpClient CreateHttpClient()
