@@ -9,7 +9,7 @@ import {
   ArrowUpCircle,
   Loader2,
   Globe,
-  Github,
+  GitBranch,
   FileJson,
   RotateCcw,
 } from "@cove/runtime/lucide-react";
@@ -451,7 +451,7 @@ export function ExtensionUpdaterPage() {
             <div key={src.id} className="py-2.5 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5 min-w-0">
                 {src.kind === "github-release" ? (
-                  <Github className="w-4 h-4 shrink-0" style={{ color: "var(--text-secondary)" }} />
+                  <GitBranch className="w-4 h-4 shrink-0" style={{ color: "var(--text-secondary)" }} />
                 ) : src.kind === "manifest-feed" ? (
                   <FileJson className="w-4 h-4 shrink-0" style={{ color: "var(--text-secondary)" }} />
                 ) : (
