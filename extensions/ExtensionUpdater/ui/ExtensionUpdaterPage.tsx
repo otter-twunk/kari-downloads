@@ -15,9 +15,10 @@ import {
   FileJson,
   RotateCcw,
   Search,
+  HardDrive,
 } from "@cove/runtime/lucide-react";
 
-type SourceKind = "manifest-feed" | "static-zip" | "github-release";
+type SourceKind = "manifest-feed" | "static-zip" | "github-release" | "gitea-release" | "local-cache";
 type StatusFilter = "all" | "updates" | "installed" | "available";
 type CategoryFilter = "all" | "downloaders" | "scrapers" | "tools";
 
@@ -45,6 +46,10 @@ interface DiscoveredItem {
   downloadUrl: string;
   updatedAt?: string | null;
   error?: string | null;
+  localCached?: boolean;
+  localVersion?: string | null;
+  localFileName?: string | null;
+  localPackageUrl?: string | null;
 }
 
 interface InstalledExtension {
@@ -108,6 +113,7 @@ export function ExtensionUpdaterPage() {
 
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [syncingLocal, setSyncingLocal] = useState(false);
   const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [statusLog, setStatusLog] = useState<Record<string, { ok: boolean; message: string }>>({});
@@ -188,7 +194,7 @@ export function ExtensionUpdaterPage() {
   }, [discovered, installedMap]);
 
   const outdatedItems = useMemo(
-    () => enrichedItems.filter((x) => x.hasUpdate && !x.item.error && x.item.downloadUrl),
+    () => enrichedItems.filter((x) => x.hasUpdate && !x.item.error && (x.item.localPackageUrl || x.item.downloadUrl)),
     [enrichedItems]
   );
 
@@ -207,14 +213,56 @@ export function ExtensionUpdaterPage() {
     });
   }, [enrichedItems, statusFilter, categoryFilter, searchQuery]);
 
-  async function installFromUrl(item: DiscoveredItem, itemKey: string, options?: { skipRefresh?: boolean }) {
+  async function syncLocalCache() {
+    setSyncingLocal(true);
+    setCheckErrors([]);
+    try {
+      const res = await extensionFetch("/api/ext/extension-updater/local-cache/sync", {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCheckErrors([body.message || `Local cache sync failed with HTTP ${res.status}`]);
+        return;
+      }
+      if (Array.isArray(body.errors) && body.errors.length > 0) {
+        setCheckErrors(body.errors);
+      } else if (body.rawError && !body.success) {
+        setCheckErrors([body.rawError]);
+      }
+      await checkUpdates();
+    } catch (err: any) {
+      setCheckErrors([err?.message || "Local cache sync failed"]);
+    } finally {
+      setSyncingLocal(false);
+    }
+  }
+
+  async function installPackage(item: DiscoveredItem, itemKey: string, options?: { skipRefresh?: boolean }) {
     setUpdatingKey(itemKey);
     try {
-      const res = await extensionFetch("/api/extensions/install-from-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: item.downloadUrl, trustUnverified: true }),
-      });
+      let res: Response;
+      if (item.localCached && item.localPackageUrl) {
+        const pkgRes = await extensionFetch(item.localPackageUrl);
+        if (!pkgRes.ok) {
+          throw new Error(`Failed to fetch local package (HTTP ${pkgRes.status})`);
+        }
+        const blob = await pkgRes.blob();
+        const fileName = item.localFileName || `${item.extensionId || "extension"}.zip`;
+        const formData = new FormData();
+        formData.append("file", new File([blob], fileName, { type: "application/zip" }));
+        formData.append("trustUnverified", "true");
+        res = await extensionFetch("/api/extensions/install-from-zip", {
+          method: "POST",
+          body: formData,
+        });
+      } else {
+        res = await extensionFetch("/api/extensions/install-from-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: item.downloadUrl, trustUnverified: true }),
+        });
+      }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setStatusLog((prev) => ({
@@ -225,7 +273,10 @@ export function ExtensionUpdaterPage() {
       }
       setStatusLog((prev) => ({
         ...prev,
-        [itemKey]: { ok: true, message: body.message || "Installed" },
+        [itemKey]: {
+          ok: true,
+          message: body.message || (item.localCached ? "Installed from local ZIP" : "Installed"),
+        },
       }));
       if (!options?.skipRefresh) {
         await loadInstalled();
@@ -253,7 +304,7 @@ export function ExtensionUpdaterPage() {
         return aSelf - bSelf;
       });
       for (const entry of ordered) {
-        await installFromUrl(entry.item, entry.key, { skipRefresh: true });
+        await installPackage(entry.item, entry.key, { skipRefresh: true });
       }
       await loadInstalled();
     } finally {
@@ -273,8 +324,8 @@ export function ExtensionUpdaterPage() {
           kind: newKind,
           label: newLabel.trim() || newUrl.trim(),
           url: newUrl.trim(),
-          tagPrefix: newKind === "github-release" ? newTagPrefix.trim() || null : null,
-          assetPattern: newKind === "github-release" ? newAssetPattern.trim() || null : null,
+          tagPrefix: newKind === "github-release" || newKind === "gitea-release" ? newTagPrefix.trim() || null : null,
+          assetPattern: newKind === "github-release" || newKind === "gitea-release" ? newAssetPattern.trim() || null : null,
           enabled: true,
         }),
       });
@@ -356,8 +407,22 @@ export function ExtensionUpdaterPage() {
           </button>
 
           <button
+            onClick={syncLocalCache}
+            disabled={syncingLocal || checking || batchRunning}
+            className="px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 border cursor-pointer disabled:opacity-50"
+            style={{
+              background: "var(--bg-surface)",
+              borderColor: "var(--border-subtle)",
+            }}
+            title="Run Sync-ExtensionPackages.ps1 to download latest .zip packages locally"
+          >
+            {syncingLocal ? <Loader2 className="w-4 h-4 animate-spin" /> : <HardDrive className="w-4 h-4" />}
+            Sync Local Cache
+          </button>
+
+          <button
             onClick={checkUpdates}
-            disabled={checking || batchRunning}
+            disabled={checking || syncingLocal || batchRunning}
             className="px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 border cursor-pointer disabled:opacity-50"
             style={{
               background: "var(--bg-surface)",
@@ -407,6 +472,7 @@ export function ExtensionUpdaterPage() {
               >
                 <option value="static-zip">Static ZIP URL</option>
                 <option value="github-release">GitHub Repo Release</option>
+                <option value="gitea-release">Gitea Repo Release (via gt)</option>
                 <option value="manifest-feed">Manifest JSON Feed</option>
               </select>
             </div>
@@ -427,7 +493,11 @@ export function ExtensionUpdaterPage() {
 
             <div>
               <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>
-                {newKind === "github-release" ? "GitHub Repo (owner/repo or URL)" : "URL"}
+                {newKind === "github-release"
+                  ? "GitHub Repo (owner/repo or URL)"
+                  : newKind === "gitea-release"
+                  ? "Gitea Repo (owner/repo or URL)"
+                  : "URL"}
               </label>
               <input
                 type="text"
@@ -437,6 +507,8 @@ export function ExtensionUpdaterPage() {
                 placeholder={
                   newKind === "github-release"
                     ? "owner/repo"
+                    : newKind === "gitea-release"
+                    ? "https://gitea.tail971353.ts.net/owner/repo"
                     : newKind === "manifest-feed"
                     ? "https://.../latest-manifest.json"
                     : "https://.../extension-latest.zip"
@@ -447,7 +519,7 @@ export function ExtensionUpdaterPage() {
             </div>
           </div>
 
-          {newKind === "github-release" && (
+          {(newKind === "github-release" || newKind === "gitea-release") && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>
@@ -697,6 +769,11 @@ export function ExtensionUpdaterPage() {
                           Available: v{item.remoteVersion}
                         </span>
                       )}
+                      {item.localCached && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300">
+                          Local ZIP
+                        </span>
+                      )}
                       {item.minCoveVersion && (
                         <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
                           Cove {item.minCoveVersion}+
@@ -723,8 +800,8 @@ export function ExtensionUpdaterPage() {
 
                   <div>
                     <button
-                      onClick={() => installFromUrl(item, key)}
-                      disabled={isInstalling || batchRunning || !item.downloadUrl}
+                      onClick={() => installPackage(item, key)}
+                      disabled={isInstalling || batchRunning || (!item.localPackageUrl && !item.downloadUrl)}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-50 border"
                       style={
                         hasUpdate || !installed

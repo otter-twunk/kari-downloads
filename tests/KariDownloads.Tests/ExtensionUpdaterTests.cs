@@ -27,7 +27,7 @@ public sealed class ExtensionUpdaterTests
         var ui = extension.GetUIManifest();
         Assert.NotNull(ui);
         Assert.Contains(ui.Pages, p => p.ComponentName == "ExtensionUpdaterPage");
-        Assert.Equal("0.1.2", extension.Version);
+        Assert.Equal("0.1.3", extension.Version);
     }
 
     [Fact]
@@ -144,7 +144,10 @@ public sealed class ExtensionUpdaterTests
             return new HttpResponseMessage(HttpStatusCode.NotFound);
         });
 
-        var service = new ExtensionUpdaterService(new HttpClient(handler));
+        var service = new ExtensionUpdaterService(new HttpClient(handler))
+        {
+            CacheDir = Path.Combine(Path.GetTempPath(), "cove-ext-empty-" + Guid.NewGuid().ToString("N")),
+        };
         await service.SaveSourcesAsync(
         [
             new ExtensionSourceEntry
@@ -198,6 +201,68 @@ public sealed class ExtensionUpdaterTests
         Assert.Equal(1, zipDownloads);
         var cachedZipItem = Assert.Single(cachedResult.Items, i => i.SourceId == "zip-1");
         Assert.Equal("2.4.1", cachedZipItem.RemoteVersion);
+    }
+
+    [Fact]
+    public async Task CheckSourcesAsync_EnrichesFromLocalCache_AndSupportsGiteaRelease()
+    {
+        var tempCache = Path.Combine(Path.GetTempPath(), "cove-ext-cache-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempCache);
+        try
+        {
+            var zipBytes = BuildTestExtensionZip("covelibrarian", "Cove Librarian", "0.15.2");
+            var zipPath = Path.Combine(tempCache, "covelibrarian-latest.zip");
+            await File.WriteAllBytesAsync(zipPath, zipBytes);
+
+            await File.WriteAllTextAsync(Path.Combine(tempCache, "latest-manifest.json"), """
+            {
+              "schemaVersion": 1,
+              "extensions": {
+                "covelibrarian": {
+                  "id": "covelibrarian",
+                  "name": "Cove Librarian",
+                  "version": "0.15.2",
+                  "fileName": "covelibrarian-latest.zip",
+                  "sourceId": "gitea-lib",
+                  "downloadUrl": "https://gitea.tail971353.ts.net/gitea-admin/cove-librarian"
+                }
+              }
+            }
+            """);
+
+            var svc = new ExtensionUpdaterService(new HttpClient(new StubHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound))))
+            {
+                CacheDir = tempCache,
+            };
+            await svc.SaveSourcesAsync([
+                new ExtensionSourceEntry
+                {
+                    Id = "gitea-lib",
+                    Kind = "gitea-release",
+                    Label = "Cove Librarian (Gitea)",
+                    Url = "https://gitea.tail971353.ts.net/gitea-admin/cove-librarian",
+                    Enabled = true,
+                },
+            ]);
+
+            var result = await svc.CheckSourcesAsync();
+            Assert.Empty(result.Errors);
+            var item = Assert.Single(result.Items);
+            Assert.Equal("covelibrarian", item.ExtensionId);
+            Assert.Equal("0.15.2", item.RemoteVersion);
+            Assert.True(item.LocalCached);
+            Assert.Equal("/api/ext/extension-updater/local-cache/package/covelibrarian", item.LocalPackageUrl);
+
+            Assert.True(svc.TryGetLocalPackagePath("covelibrarian", out var resolvedPath, out var resolvedName));
+            Assert.Equal(zipPath, resolvedPath);
+            Assert.Equal("covelibrarian-latest.zip", resolvedName);
+            Assert.False(svc.TryGetLocalPackagePath("../covelibrarian", out _, out _));
+        }
+        finally
+        {
+            if (Directory.Exists(tempCache))
+                Directory.Delete(tempCache, recursive: true);
+        }
     }
 
     private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)

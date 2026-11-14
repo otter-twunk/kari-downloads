@@ -85,5 +85,25 @@ public sealed class ExtensionUpdaterExtension : CoveExtensionBase, IUIExtension,
             var result = await _service.CheckSourcesAsync(inspectStaticZips ?? true, ct);
             return Results.Ok(result);
         }).RequireCovePermission("extensions.read");
+
+        group.MapGet("/local-cache", async (CancellationToken ct) =>
+        {
+            var status = await _service.GetLocalCacheStatusAsync(ct);
+            return Results.Ok(status);
+        }).RequireCovePermission("extensions.read");
+
+        group.MapPost("/local-cache/sync", async ([FromQuery] bool? force, CancellationToken ct) =>
+        {
+            var result = await _service.TriggerLocalSyncAsync(force ?? false, ct);
+            return Results.Ok(result);
+        }).RequireCovePermission("extensions.install");
+
+        group.MapGet("/local-cache/package/{extensionId}", (string extensionId) =>
+        {
+            if (!_service.TryGetLocalPackagePath(extensionId, out var filePath, out var fileName))
+                return Results.NotFound(new { message = $"Local package for '{extensionId}' not found." });
+
+            return Results.File(filePath, "application/zip", fileName);
+        }).RequireCovePermission("extensions.read");
     }
 }

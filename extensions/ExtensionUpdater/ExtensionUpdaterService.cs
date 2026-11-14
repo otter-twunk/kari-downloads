@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
@@ -35,7 +36,45 @@ public sealed record DiscoveredExtensionItem
     public string DownloadUrl { get; init; } = string.Empty;
     public string? UpdatedAt { get; init; }
     public string? Error { get; init; }
+    public bool LocalCached { get; init; }
+    public string? LocalVersion { get; init; }
+    public string? LocalFileName { get; init; }
+    public string? LocalPackageUrl { get; init; }
 }
+
+public sealed record LocalPackageEntry
+{
+    public string Id { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string Version { get; init; } = string.Empty;
+    public string? Description { get; init; }
+    public string? MinCoveVersion { get; init; }
+    public IReadOnlyList<string>? Categories { get; init; }
+    public string FileName { get; init; } = string.Empty;
+    public long SizeBytes { get; init; }
+    public string? Sha256 { get; init; }
+    public string? SourceId { get; init; }
+    public string? DownloadUrl { get; init; }
+    public string? UpdatedAt { get; init; }
+}
+
+public sealed record LocalCacheStatus(
+    string CacheDir,
+    string SyncScriptPath,
+    bool SyncScriptExists,
+    string SourcesFilePath,
+    string? LastSyncAt,
+    IReadOnlyList<LocalPackageEntry> Packages);
+
+public sealed record LocalSyncResult(
+    bool Success,
+    string? SyncedAt,
+    string CacheDir,
+    int TotalPackages,
+    IReadOnlyList<string> Updated,
+    IReadOnlyList<string> Skipped,
+    IReadOnlyList<string> Errors,
+    string? RawError);
 
 public sealed record CheckSourcesResult(
     IReadOnlyList<DiscoveredExtensionItem> Items,
@@ -48,6 +87,21 @@ public sealed class ExtensionUpdaterService
 
     private const string StoreKey = "sources.v1";
     private const long MaxZipInspectBytes = 64 * 1024 * 1024;
+    private static readonly Regex SafeExtensionIdRegex = new(
+        @"^[A-Za-z0-9._-]+$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    public string CacheDir { get; set; } =
+        Environment.GetEnvironmentVariable("COVE_EXTENSION_CACHE_DIR")
+        ?? @"C:\Users\harls\Server\cove-data\extension-packages";
+
+    public string SyncScriptPath { get; } =
+        Environment.GetEnvironmentVariable("COVE_EXTENSION_SYNC_SCRIPT")
+        ?? @"C:\Users\harls\Server\cove-stack\scripts\Sync-ExtensionPackages.ps1";
+
+    public string SourcesFilePath { get; } =
+        Environment.GetEnvironmentVariable("COVE_EXTENSION_SOURCES_FILE")
+        ?? @"C:\Users\harls\Server\cove-data\extension-sources.json";
 
     private static readonly Regex GitHubRepoSlugRegex = new(
         @"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
@@ -170,6 +224,14 @@ public sealed class ExtensionUpdaterService
             if (!GitHubRepoSlugRegex.IsMatch(repoSlug) || repoSlug.Contains("..", StringComparison.Ordinal))
                 throw new ArgumentException($"Invalid GitHub repository '{rawUrl}'. Expected 'owner/repo' or a GitHub repo URL.");
         }
+        else if (kind == "gitea-release")
+        {
+            var isSlug = GitHubRepoSlugRegex.IsMatch(rawUrl) && !rawUrl.Contains("..", StringComparison.Ordinal);
+            var isHttp = Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) &&
+                         (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+            if (!isSlug && !isHttp)
+                throw new ArgumentException($"Invalid Gitea repository '{rawUrl}'. Expected 'owner/repo' or an http(s):// Gitea repo URL.");
+        }
         else
         {
             if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) ||
@@ -229,8 +291,7 @@ public sealed class ExtensionUpdaterService
     public async Task<CheckSourcesResult> CheckSourcesAsync(bool inspectStaticZips = true, CancellationToken ct = default)
     {
         var sources = (await GetSourcesAsync(ct)).Where(s => s.Enabled).ToList();
-        if (sources.Count == 0)
-            return new CheckSourcesResult([], []);
+        var localCache = await LoadLocalManifestMapAsync(ct);
 
         var itemsBySource = new List<DiscoveredExtensionItem>[sources.Count];
         var errorsBySource = new string?[sources.Count];
@@ -248,6 +309,9 @@ public sealed class ExtensionUpdaterService
                         break;
                     case "github-release":
                         itemsBySource[idx] = [await CheckGitHubReleaseAsync(source, ct)];
+                        break;
+                    case "gitea-release":
+                        itemsBySource[idx] = CheckGiteaFromLocalCache(source, localCache);
                         break;
                     default:
                         itemsBySource[idx] = [await CheckStaticZipAsync(source, inspectStaticZips, ct)];
@@ -285,12 +349,46 @@ public sealed class ExtensionUpdaterService
 
         var allItems = new List<DiscoveredExtensionItem>();
         var allErrors = new List<string>();
+        var seenExtIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         for (var i = 0; i < sources.Count; i++)
         {
             if (itemsBySource[i] != null)
-                allItems.AddRange(itemsBySource[i]);
+            {
+                foreach (var item in itemsBySource[i])
+                {
+                    var enriched = EnrichWithLocalCache(item, localCache);
+                    allItems.Add(enriched);
+                    if (!string.IsNullOrWhiteSpace(enriched.ExtensionId))
+                        seenExtIds.Add(enriched.ExtensionId);
+                }
+            }
             if (errorsBySource[i] is { } err)
                 allErrors.Add(err);
+        }
+
+        // Include any locally cached packages from external sources (e.g. extension-sources.json)
+        foreach (var pkg in localCache.Values.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            if (seenExtIds.Contains(pkg.Id)) continue;
+            allItems.Add(new DiscoveredExtensionItem
+            {
+                SourceId = string.IsNullOrWhiteSpace(pkg.SourceId) ? "local-cache" : pkg.SourceId,
+                SourceLabel = "Local ZIP Cache",
+                SourceKind = "local-cache",
+                ExtensionId = pkg.Id,
+                Name = pkg.Name,
+                RemoteVersion = pkg.Version,
+                MinCoveVersion = pkg.MinCoveVersion,
+                Categories = pkg.Categories,
+                Description = pkg.Description,
+                DownloadUrl = pkg.DownloadUrl ?? string.Empty,
+                UpdatedAt = pkg.UpdatedAt,
+                LocalCached = true,
+                LocalVersion = pkg.Version,
+                LocalFileName = pkg.FileName,
+                LocalPackageUrl = BuildLocalPackageUrl(pkg.Id),
+            });
         }
 
         return new CheckSourcesResult(allItems, allErrors);
@@ -536,8 +634,344 @@ public sealed class ExtensionUpdaterService
     {
         "manifest-feed" => "manifest-feed",
         "github-release" => "github-release",
+        "gitea-release" => "gitea-release",
         _ => "static-zip",
     };
+
+    private static string BuildLocalPackageUrl(string extensionId) =>
+        $"/api/ext/extension-updater/local-cache/package/{Uri.EscapeDataString(extensionId)}";
+
+    private static List<DiscoveredExtensionItem> CheckGiteaFromLocalCache(
+        ExtensionSourceEntry source,
+        Dictionary<string, LocalPackageEntry> localCache)
+    {
+        var matches = localCache.Values
+            .Where(p => string.Equals(p.SourceId, source.Id, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (matches.Count == 0)
+        {
+            return
+            [
+                new DiscoveredExtensionItem
+                {
+                    SourceId = source.Id,
+                    SourceLabel = source.Label,
+                    SourceKind = source.Kind,
+                    ExtensionId = source.ExtensionId,
+                    Name = source.Label,
+                    DownloadUrl = source.Url,
+                    Error = "Not synced locally yet. Click 'Sync Local Cache' to fetch from Gitea via gt.",
+                },
+            ];
+        }
+
+        return matches.Select(pkg => new DiscoveredExtensionItem
+        {
+            SourceId = source.Id,
+            SourceLabel = source.Label,
+            SourceKind = source.Kind,
+            ExtensionId = pkg.Id,
+            Name = pkg.Name,
+            RemoteVersion = pkg.Version,
+            MinCoveVersion = pkg.MinCoveVersion,
+            Categories = pkg.Categories,
+            Description = pkg.Description,
+            DownloadUrl = pkg.DownloadUrl ?? source.Url,
+            UpdatedAt = pkg.UpdatedAt,
+            LocalCached = true,
+            LocalVersion = pkg.Version,
+            LocalFileName = pkg.FileName,
+            LocalPackageUrl = BuildLocalPackageUrl(pkg.Id),
+        }).ToList();
+    }
+
+    private static DiscoveredExtensionItem EnrichWithLocalCache(
+        DiscoveredExtensionItem item,
+        Dictionary<string, LocalPackageEntry> localCache)
+    {
+        if (string.IsNullOrWhiteSpace(item.ExtensionId))
+            return item;
+
+        if (!localCache.TryGetValue(item.ExtensionId.Trim(), out var cached))
+            return item;
+
+        return item with
+        {
+            LocalCached = true,
+            LocalVersion = cached.Version,
+            LocalFileName = cached.FileName,
+            LocalPackageUrl = BuildLocalPackageUrl(cached.Id),
+            RemoteVersion = string.IsNullOrWhiteSpace(item.RemoteVersion) ? cached.Version : item.RemoteVersion,
+            Error = item.Error != null && !string.IsNullOrWhiteSpace(cached.Version) ? null : item.Error,
+        };
+    }
+
+    public async Task<LocalCacheStatus> GetLocalCacheStatusAsync(CancellationToken ct = default)
+    {
+        var map = await LoadLocalManifestMapAsync(ct);
+        string? lastSyncAt = null;
+        var statePath = Path.Combine(CacheDir, "sync-state.json");
+        if (File.Exists(statePath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(statePath, ct));
+                lastSyncAt = GetString(doc.RootElement, "lastSyncAt");
+            }
+            catch
+            {
+                // Ignore malformed state file
+            }
+        }
+
+        return new LocalCacheStatus(
+            CacheDir,
+            SyncScriptPath,
+            File.Exists(SyncScriptPath),
+            SourcesFilePath,
+            lastSyncAt,
+            map.Values.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList());
+    }
+
+    public bool TryGetLocalPackagePath(string extensionId, out string filePath, out string fileName)
+    {
+        filePath = string.Empty;
+        fileName = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(extensionId) || !SafeExtensionIdRegex.IsMatch(extensionId.Trim()))
+            return false;
+
+        var normalizedId = extensionId.Trim().ToLowerInvariant();
+        var manifestPath = Path.Combine(CacheDir, "latest-manifest.json");
+        if (File.Exists(manifestPath))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(File.ReadAllText(manifestPath));
+                if (doc.RootElement.TryGetProperty("extensions", out var exts) &&
+                    exts.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var prop in exts.EnumerateObject())
+                    {
+                        if (!string.Equals(prop.Name, normalizedId, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        var candidateName = GetString(prop.Value, "fileName");
+                        if (!string.IsNullOrWhiteSpace(candidateName))
+                        {
+                            var safeName = Path.GetFileName(candidateName);
+                            var candidatePath = Path.Combine(CacheDir, safeName);
+                            if (File.Exists(candidatePath))
+                            {
+                                filePath = candidatePath;
+                                fileName = safeName;
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to conventional filename
+            }
+        }
+
+        var fallbackName = $"{normalizedId}-latest.zip";
+        var fallbackPath = Path.Combine(CacheDir, fallbackName);
+        if (File.Exists(fallbackPath))
+        {
+            filePath = fallbackPath;
+            fileName = fallbackName;
+            return true;
+        }
+
+        return false;
+    }
+
+    public async Task<LocalSyncResult> TriggerLocalSyncAsync(bool force = false, CancellationToken ct = default)
+    {
+        if (!File.Exists(SyncScriptPath))
+        {
+            return new LocalSyncResult(
+                Success: false,
+                SyncedAt: null,
+                CacheDir: CacheDir,
+                TotalPackages: 0,
+                Updated: [],
+                Skipped: [],
+                Errors: [$"Sync script not found at '{SyncScriptPath}'."],
+                RawError: $"Sync script not found at '{SyncScriptPath}'.");
+        }
+
+        await SyncSourcesFileFromStoreAsync(ct);
+
+        var args = new List<string>
+        {
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", SyncScriptPath,
+            "-CacheDir", CacheDir,
+            "-SourcesFile", SourcesFilePath,
+            "-Json",
+        };
+        if (force)
+            args.Add("-Force");
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = OperatingSystem.IsWindows() ? "powershell.exe" : "pwsh",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args)
+            psi.ArgumentList.Add(a);
+
+        using var proc = Process.Start(psi) ?? throw new InvalidOperationException("Failed to start PowerShell sync process.");
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = proc.StandardError.ReadToEndAsync(ct);
+        await proc.WaitForExitAsync(ct);
+
+        var stdout = (await stdoutTask).Trim();
+        var stderr = (await stderrTask).Trim();
+
+        if (proc.ExitCode != 0 && string.IsNullOrWhiteSpace(stdout))
+        {
+            var err = string.IsNullOrWhiteSpace(stderr) ? $"Sync script exited with code {proc.ExitCode}." : stderr;
+            return new LocalSyncResult(false, null, CacheDir, 0, [], [], [err], err);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(stdout);
+            var root = doc.RootElement;
+            var syncedAt = GetString(root, "syncedAt");
+            var totalPackages = root.TryGetProperty("totalPackages", out var tp) && tp.TryGetInt32(out var n) ? n : 0;
+            var updated = GetStringList(root, "updated") ?? [];
+            var skipped = GetStringList(root, "skipped") ?? [];
+            var errors = GetStringList(root, "errors") ?? [];
+            return new LocalSyncResult(
+                Success: proc.ExitCode == 0 && errors.Count == 0,
+                SyncedAt: syncedAt,
+                CacheDir: CacheDir,
+                TotalPackages: totalPackages,
+                Updated: updated,
+                Skipped: skipped,
+                Errors: errors,
+                RawError: string.IsNullOrWhiteSpace(stderr) ? null : stderr);
+        }
+        catch (Exception ex)
+        {
+            return new LocalSyncResult(
+                Success: false,
+                SyncedAt: null,
+                CacheDir: CacheDir,
+                TotalPackages: 0,
+                Updated: [],
+                Skipped: [],
+                Errors: [$"Failed to parse sync output: {ex.Message}"],
+                RawError: string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
+        }
+    }
+
+    private async Task SyncSourcesFileFromStoreAsync(CancellationToken ct)
+    {
+        var storeSources = await GetSourcesAsync(ct);
+        var merged = new List<ExtensionSourceEntry>();
+        var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var s in storeSources)
+        {
+            merged.Add(s);
+            seenIds.Add(s.Id);
+        }
+
+        if (File.Exists(SourcesFilePath))
+        {
+            try
+            {
+                var existingJson = await File.ReadAllTextAsync(SourcesFilePath, ct);
+                var existing = JsonSerializer.Deserialize<List<ExtensionSourceEntry>>(existingJson, JsonOpts);
+                if (existing != null)
+                {
+                    foreach (var s in existing)
+                    {
+                        if (seenIds.Add(s.Id))
+                            merged.Add(s);
+                    }
+                }
+            }
+            catch
+            {
+                // Overwrite malformed sources file with store sources
+            }
+        }
+
+        var parent = Path.GetDirectoryName(SourcesFilePath);
+        if (!string.IsNullOrWhiteSpace(parent))
+            Directory.CreateDirectory(parent);
+
+        await File.WriteAllTextAsync(SourcesFilePath, JsonSerializer.Serialize(merged, JsonOpts), ct);
+    }
+
+    private async Task<Dictionary<string, LocalPackageEntry>> LoadLocalManifestMapAsync(CancellationToken ct)
+    {
+        var result = new Dictionary<string, LocalPackageEntry>(StringComparer.OrdinalIgnoreCase);
+        var manifestPath = Path.Combine(CacheDir, "latest-manifest.json");
+        if (!File.Exists(manifestPath))
+            return result;
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(manifestPath, ct);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("extensions", out var exts) || exts.ValueKind != JsonValueKind.Object)
+                return result;
+
+            foreach (var prop in exts.EnumerateObject())
+            {
+                var elem = prop.Value;
+                var id = GetString(elem, "id") ?? prop.Name;
+                var version = GetString(elem, "version");
+                var fileName = GetString(elem, "fileName") ?? $"{id.ToLowerInvariant()}-latest.zip";
+                if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(version))
+                    continue;
+
+                var safeFile = Path.GetFileName(fileName);
+                var fullPath = Path.Combine(CacheDir, safeFile);
+                if (!File.Exists(fullPath))
+                    continue;
+
+                long sizeBytes = elem.TryGetProperty("sizeBytes", out var sb) && sb.TryGetInt64(out var s)
+                    ? s
+                    : new FileInfo(fullPath).Length;
+
+                result[id] = new LocalPackageEntry
+                {
+                    Id = id,
+                    Name = GetString(elem, "name") ?? id,
+                    Version = version,
+                    Description = GetString(elem, "description"),
+                    MinCoveVersion = GetString(elem, "minCoveVersion"),
+                    Categories = GetStringList(elem, "categories"),
+                    FileName = safeFile,
+                    SizeBytes = sizeBytes,
+                    Sha256 = GetString(elem, "sha256"),
+                    SourceId = GetString(elem, "sourceId"),
+                    DownloadUrl = GetString(elem, "downloadUrl"),
+                    UpdatedAt = GetString(elem, "updatedAt"),
+                };
+            }
+        }
+        catch
+        {
+            // Ignore malformed manifest
+        }
+
+        return result;
+    }
 
     public static string NormalizeGitHubRepo(string input)
     {
