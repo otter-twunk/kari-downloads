@@ -1,8 +1,8 @@
 {
   "id": "karinauts.tools.batch-downloader",
   "name": "Batch URL Downloader",
-  "version": "0.1.3",
-  "description": "Paste a list of URLs to inspect, tag, and batch download into your Cove library.",
+  "version": "0.1.4",
+  "description": "Paste URLs to inspect, tag, and manage in a persistent download queue with live Skip, Pause, Resume, and Finish After Current Job controls.",
   "author": "Karinauts",
   "url": "https://github.com/kari/kari-downloads",
   "categories": [

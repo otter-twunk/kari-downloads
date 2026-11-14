@@ -2,26 +2,26 @@
   "schemaVersion": 1,
   "id": "batch-video-scraper",
   "title": "Batch Video Scraper",
-  "description": "Bulk-scrape selected videos with automatic URL-to-scraper routing and field-level metadata blending strategies (merge, replace, overwrite, or fill empty).",
+  "description": "Bulk-scrape selected videos with a persistent queue, automatic URL-to-scraper routing, field-level metadata blending, and live queue controls (Skip, Pause, Finish After Current).",
   "order": 20,
   "sections": [
     {
       "id": "workflow",
-      "title": "Bulk Scraping Workflow",
+      "title": "Persistent Scrape Queue & Controls",
       "owner": "BatchScraper",
       "order": 10,
       "blocks": [
         {
           "type": "paragraph",
-          "text": "Select multiple videos on the Videos list page and choose Scrape All from the bulk action bar to launch the Batch Video Scraper modal."
+          "text": "Select multiple videos on the Videos list page and choose Scrape All from the bulk action bar to add them to the persistent Batch Video Scraper queue. You can minimize the modal and add more videos to the queue at any time."
         },
         {
           "type": "steps",
           "items": [
             "Keep Auto-Match by Video URL selected (with an optional fallback scraper) to route heterogeneous batches automatically, or pick a specific Video Scraper.",
             "Configure how each metadata field (Title, Date, Details, Code, Director, Cover, Studio, Performers, Tags, URLs) should be blended.",
-            "Set the request concurrency (1–4) to balance speed against site rate limits.",
-            "Click Start Batch Scrape to monitor live per-video progress, and use Retry Unmatched to re-run any misses."
+            "Click Start Scrape Queue to begin processing, or minimize the modal to a floating status pill while continuing to browse and add more videos.",
+            "Use Pause, Skip Current (or per-item Skip), and Finish After Current to control execution on the fly."
           ]
         }
       ]

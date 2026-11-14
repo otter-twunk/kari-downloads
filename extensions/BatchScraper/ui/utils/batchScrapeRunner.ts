@@ -54,16 +54,103 @@ export interface VideoInfo {
   hasCover?: boolean;
 }
 
+export type BatchItemStatus =
+  | "pending"
+  | "fetching"
+  | "scraping"
+  | "applying"
+  | "applied"
+  | "no_match"
+  | "error"
+  | "skipped";
+
+export type BatchQueueRunnerState = "idle" | "running" | "paused";
+
 export interface BatchItemProgress {
   videoId: number;
   title: string;
   filename: string;
   scraperName?: string;
-  status: "pending" | "fetching" | "scraping" | "applying" | "applied" | "no_match" | "error";
+  status: BatchItemStatus;
   statusMessage?: string;
   matchedTitle?: string;
   appliedSummary?: string[];
   scrapeAttemptId?: string;
+}
+
+export interface PersistedBatchScraperQueue {
+  queueState: BatchQueueRunnerState;
+  finishAfterCurrent: boolean;
+  config?: MetadataBlendConfig;
+  items: BatchItemProgress[];
+  updatedAt?: string;
+}
+
+export function isInFlightItemStatus(status: BatchItemStatus): boolean {
+  return status === "fetching" || status === "scraping" || status === "applying";
+}
+
+/**
+ * Merges incoming videoIds into an existing persistent queue without losing active or completed items.
+ * - New video IDs are appended as "pending".
+ * - Existing items in terminal failure/skip states ("error", "no_match", "skipped") are reset to "pending".
+ */
+export function mergeQueueVideoIds(
+  existingItems: BatchItemProgress[],
+  incomingVideoIds: number[]
+): { items: BatchItemProgress[]; addedCount: number } {
+  const next = [...existingItems];
+  const indexById = new Map<number, number>();
+  next.forEach((item, idx) => indexById.set(item.videoId, idx));
+
+  let addedCount = 0;
+  const uniqueIds = Array.from(new Set(incomingVideoIds.filter((id) => Number.isInteger(id) && id > 0)));
+
+  for (const id of uniqueIds) {
+    const existingIdx = indexById.get(id);
+    if (existingIdx !== undefined) {
+      const current = next[existingIdx];
+      if (current.status === "error" || current.status === "no_match" || current.status === "skipped") {
+        next[existingIdx] = {
+          ...current,
+          status: "pending",
+          statusMessage: "Re-queued",
+        };
+        addedCount++;
+      }
+    } else {
+      indexById.set(id, next.length);
+      next.push({
+        videoId: id,
+        title: `Video #${id}`,
+        filename: "",
+        status: "pending",
+      });
+      addedCount++;
+    }
+  }
+
+  return { items: next, addedCount };
+}
+
+/**
+ * Parses a comma/space/newline-separated string of video IDs or URLs (/videos/123) into positive integer IDs.
+ */
+export function parseVideoIdsInput(raw: string): number[] {
+  if (!raw || !raw.trim()) return [];
+  const ids: number[] = [];
+  const urlMatches = raw.matchAll(/\/videos\/(\d+)/gi);
+  for (const m of urlMatches) {
+    const parsed = parseInt(m[1], 10);
+    if (parsed > 0) ids.push(parsed);
+  }
+  const stripped = raw.replace(/https?:\/\/[^\s,]+/gi, " ");
+  const tokenMatches = stripped.matchAll(/\b(\d+)\b/g);
+  for (const m of tokenMatches) {
+    const parsed = parseInt(m[1], 10);
+    if (parsed > 0) ids.push(parsed);
+  }
+  return Array.from(new Set(ids));
 }
 
 export interface ScrapeAttemptResponse {

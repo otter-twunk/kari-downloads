@@ -2,25 +2,26 @@
   "schemaVersion": 1,
   "id": "batch-url-downloader",
   "title": "Batch URL Downloader",
-  "description": "Paste multiple media URLs, inspect compatible Cove downloaders, detect library duplicates, apply initial metadata tags or groups, and queue background batch downloads.",
+  "description": "Paste multiple media URLs, inspect compatible Cove downloaders, detect library duplicates, apply initial metadata tags or groups, and manage a persistent download queue with Skip, Pause, and Finish After Current controls.",
   "order": 10,
   "sections": [
     {
       "id": "quick-start",
-      "title": "Quick Start",
+      "title": "Persistent Download Queue & Controls",
       "order": 10,
       "blocks": [
         {
           "type": "paragraph",
-          "text": "Open Paste & Download from the navigation bar to extract HTTP/HTTPS URLs from plain text, Markdown, or chat logs and queue them into your Cove library."
+          "text": "Open Paste & Download from the navigation bar to extract HTTP/HTTPS URLs from plain text, Markdown, or chat logs and add them to your persistent download queue."
         },
         {
           "type": "steps",
           "items": [
-            "Paste one or more URLs into the Paste URLs box. Duplicate and trailing punctuation are cleaned automatically.",
+            "Paste one or more URLs into the Add URLs to Queue box. Duplicate and trailing punctuation are cleaned automatically.",
             "Optionally select a Studio, Group / Series, Tags, or Performers under Initial Metadata Tagging to pre-tag every queued item.",
             "Click Inspect Downloaders to check which installed downloader matches each URL, detect existing library duplicates, and preview available quality options.",
-            "Click Queue Downloads to start the background download job."
+            "Click Queue & Start (or Append to Queue while running/paused) to add the staged URLs to the persistent queue.",
+            "Use Pause, Resume, Skip Current (or per-item Skip), and Finish After Current to control the active download queue at any time."
           ]
         }
       ]
@@ -50,7 +51,13 @@
           "columns": ["Method & Path", "Purpose"],
           "rows": [
             ["POST /api/ext/batch-downloader/match", "Extract and match URLs concurrently against installed downloaders"],
-            ["POST /api/ext/batch-downloader/queue", "Queue matched URLs into a background download-batch job"]
+            ["GET /api/ext/batch-downloader/queue", "Inspect the persistent download queue state, counters, and items"],
+            ["POST /api/ext/batch-downloader/queue", "Append URLs or pre-inspected items to the persistent download queue"],
+            ["POST /api/ext/batch-downloader/queue/pause", "Pause queue processing and return the active item to Pending"],
+            ["POST /api/ext/batch-downloader/queue/resume", "Resume processing Pending items in the queue"],
+            ["POST /api/ext/batch-downloader/queue/finish-after-current", "Toggle finish-after-current-job drain mode"],
+            ["POST /api/ext/batch-downloader/queue/skip-current", "Skip the currently running download and advance to the next item"],
+            ["POST /api/ext/batch-downloader/queue/skip/{itemId}", "Skip a specific pending or running item"]
           ]
         }
       ]
