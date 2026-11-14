@@ -1,0 +1,24 @@
+{
+  "id": "karinauts.tools.extension-updater",
+  "name": "Extension Updater",
+  "version": "0.1.0",
+  "description": "Check and update Cove extensions from static URLs, GitHub releases, and external feeds.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "ui",
+    "tools"
+  ],
+  "minCoveVersion": "1.8.0",
+  "entryDll": "ExtensionUpdater.dll",
+  "jsBundle": "dist/bundle.js",
+  "cssBundle": "dist/bundle.css",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "*"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": []
+  }
+}

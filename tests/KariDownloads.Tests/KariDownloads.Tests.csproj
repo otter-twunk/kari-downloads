@@ -44,6 +44,7 @@
         <ProjectReference Include="..\..\extensions\GayporntubeScraper\GayporntubeScraper.csproj" />
         <ProjectReference Include="..\..\extensions\ThisvidDownloader\ThisvidDownloader.csproj" />
         <ProjectReference Include="..\..\extensions\ThisvidScraper\ThisvidScraper.csproj" />
+        <ProjectReference Include="..\..\extensions\ExtensionUpdater\ExtensionUpdater.csproj" />
     <!-- EXTENSION_PROJECT_REFERENCES -->
   </ItemGroup>
 

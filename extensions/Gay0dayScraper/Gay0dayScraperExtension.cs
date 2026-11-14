@@ -469,6 +469,6 @@ public sealed class Gay0dayScraperExtension : CoveExtensionBase, IScraperProvide
     private HttpClient CreateHttpClient(string scraperId)
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(scraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(scraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

@@ -23,6 +23,17 @@ internal static class DownloaderUtilities
     private static readonly Regex JsonLdScriptRegex = new(
         @"<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(?<json>.*?)</script>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex AttributeRegex = new(
+        @"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly SocketsHttpHandler FallbackSocketsHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+    };
+
+    public static HttpClient CreateFallbackHttpClient() => new(FallbackSocketsHandler, disposeHandler: false);
 
     public sealed record BracketedMetadata(string Title, string? Details, List<string> TagNames);
 
@@ -252,10 +263,18 @@ internal static class DownloaderUtilities
 
         var totalBytes = response.Content.Headers.ContentLength;
         await using var input = await response.Content.ReadAsStreamAsync(ct);
-        await using var output = File.Create(destinationPath);
+        await using var output = new FileStream(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 64 * 1024,
+            useAsync: true);
 
         var buffer = new byte[64 * 1024];
         long totalRead = 0;
+        var lastReportedProgress = startProgress;
+        var lastReportTick = Environment.TickCount64;
         int bytesRead;
         while ((bytesRead = await input.ReadAsync(buffer, ct)) > 0)
         {
@@ -266,7 +285,13 @@ internal static class DownloaderUtilities
             {
                 var fraction = Math.Clamp((double)totalRead / totalBytes.Value, 0.0, 1.0);
                 var progress = startProgress + (endProgress - startProgress) * fraction;
-                host.ReportProgress(progress, $"Downloaded {totalRead / 1024:N0} KB of {totalBytes.Value / 1024:N0} KB");
+                var now = Environment.TickCount64;
+                if (progress - lastReportedProgress >= 0.5 || now - lastReportTick >= 250)
+                {
+                    lastReportedProgress = progress;
+                    lastReportTick = now;
+                    host.ReportProgress(progress, $"Downloaded {totalRead / 1024:N0} KB of {totalBytes.Value / 1024:N0} KB");
+                }
             }
         }
 
@@ -275,7 +300,7 @@ internal static class DownloaderUtilities
     }
 
     /// <summary>
-    /// Downloads multiple images into a staging folder and packs them into a .zip archive in <paramref name="host"/>.TempDirectory.
+    /// Downloads multiple images concurrently (up to 4 in flight) into a staging folder and packs them into a .zip archive in <paramref name="host"/>.TempDirectory.
     /// </summary>
     public static async Task<string> CreateGalleryZipAsync(
         HttpClient client,
@@ -295,38 +320,63 @@ internal static class DownloaderUtilities
 
         try
         {
+            using var semaphore = new SemaphoreSlim(4, 4);
+            var completed = 0;
+            var tasks = new Task[imageUrls.Count];
+
             for (var i = 0; i < imageUrls.Count; i++)
             {
-                ct.ThrowIfCancellationRequested();
+                var index = i;
                 var imageUrl = imageUrls[i];
-                var ext = EnsureExtensionFromUrl(imageUrl, ".jpg");
-                var itemFileName = $"{i + 1:D3}{ext}";
-                var itemPath = Path.Combine(stagingDir, itemFileName);
-
-                using var request = new HttpRequestMessage(HttpMethod.Get, imageUrl);
-                request.Headers.UserAgent.TryParseAdd(DefaultUserAgent);
-                if (headers != null)
+                tasks[i] = Task.Run(async () =>
                 {
-                    foreach (var (key, value) in headers)
-                        request.Headers.TryAddWithoutValidation(key, value);
-                }
+                    await semaphore.WaitAsync(ct);
+                    try
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var ext = EnsureExtensionFromUrl(imageUrl, ".jpg");
+                        var itemFileName = $"{index + 1:D3}{ext}";
+                        var itemPath = Path.Combine(stagingDir, itemFileName);
 
-                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-                response.EnsureSuccessStatusCode();
+                        using var request = new HttpRequestMessage(HttpMethod.Get, imageUrl);
+                        request.Headers.UserAgent.TryParseAdd(DefaultUserAgent);
+                        if (headers != null)
+                        {
+                            foreach (var (key, value) in headers)
+                                request.Headers.TryAddWithoutValidation(key, value);
+                        }
 
-                await using var input = await response.Content.ReadAsStreamAsync(ct);
-                await using var output = File.Create(itemPath);
-                await input.CopyToAsync(output, ct);
+                        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                        response.EnsureSuccessStatusCode();
 
-                var progress = 10.0 + (80.0 * (i + 1) / imageUrls.Count);
-                host.ReportProgress(progress, $"Downloaded gallery image {i + 1}/{imageUrls.Count}");
+                        await using var input = await response.Content.ReadAsStreamAsync(ct);
+                        await using var output = new FileStream(
+                            itemPath,
+                            FileMode.Create,
+                            FileAccess.Write,
+                            FileShare.None,
+                            bufferSize: 64 * 1024,
+                            useAsync: true);
+                        await input.CopyToAsync(output, ct);
+
+                        var done = Interlocked.Increment(ref completed);
+                        var progress = 10.0 + (80.0 * done / imageUrls.Count);
+                        host.ReportProgress(progress, $"Downloaded gallery image {done}/{imageUrls.Count}");
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                }, ct);
             }
+
+            await Task.WhenAll(tasks);
 
             var zipPath = Path.Combine(host.TempDirectory, $"{safeBaseName}.zip");
             if (File.Exists(zipPath))
                 File.Delete(zipPath);
 
-            ZipFile.CreateFromDirectory(stagingDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory: false);
+            ZipFile.CreateFromDirectory(stagingDir, zipPath, CompressionLevel.Fastest, includeBaseDirectory: false);
             host.ReportProgress(98.0, "Packed gallery ZIP archive.");
             return zipPath;
         }
@@ -342,7 +392,7 @@ internal static class DownloaderUtilities
     private static Dictionary<string, string> ParseAttributes(string tag)
     {
         var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match attribute in Regex.Matches(tag, @"(?is)([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))"))
+        foreach (Match attribute in AttributeRegex.Matches(tag))
         {
             attributes[attribute.Groups[1].Value] = attribute.Groups[3].Success
                 ? attribute.Groups[3].Value

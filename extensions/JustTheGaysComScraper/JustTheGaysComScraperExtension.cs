@@ -47,6 +47,70 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         @"<link\b[^>]+rel\s*=\s*['""]alternate['""][^>]+type\s*=\s*['""]application/json['""][^>]+href\s*=\s*['""](?<href>https?://[^'""]+/wp-json/wp/v2/video/\d+)['""]",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex SearchVideoLinkRegex = new(
+        @"<a\b[^>]*href\s*=\s*['""](?<href>https?://(?:www\.)?justthegays\.com/video/[^'""]+)['""][^>]*>(?<inner>.*?)</a>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex GenericLogoRegex = new(
+        @"/(?:logo[a-zA-Z0-9_-]*|output-removebg-preview[a-zA-Z0-9_-]*|JustTheGays(?:-[a-zA-Z0-9_]+)?|default[a-zA-Z0-9_-]*|avatar[a-zA-Z0-9_-]*)\.(?:png|jpg|jpeg|webp)(?:\?|$)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex PostTagsDivRegex = new(
+        @"<div\b[^>]*class\s*=\s*['""][^'""]*\b(?:post-tags|post-terms)\b[^'""]*['""][^>]*>(?<content>.*?)</div>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex PostTagsPerformerLinkRegex = new(
+        @"<a\b[^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex SidebarFooterMenuRegex = new(
+        @"<(?:nav|div|aside)\b[^>]*id\s*=\s*['""][^'""]*(?:sidebar|footer|menu)[^'""]*['""][^>]*>.*?</(?:nav|div|aside)>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex MenuUlRegex = new(
+        @"<ul\b[^>]*class\s*=\s*['""][^'""]*\bmenu\b[^'""]*['""][^>]*>.*?</ul>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex JsonLdBlockRegex = new(
+        @"<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(.*?)</script>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex WpSizedImageSuffixRegex = new(
+        @"-\d+x\d+\.[a-zA-Z0-9]+(?:\?|$)",
+        RegexOptions.Compiled);
+
+    private static readonly Regex ArticleBlockRegex = new(
+        @"<article\b[^>]*>.*?</article>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+    private static readonly Regex TitleDashSuffixRegex = new(
+        @"\s*[-–—]\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex TitlePipeSuffixRegex = new(
+        @"\s*\|\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex VideoFileExtSuffixRegex = new(
+        @"\.(?:mp4|m4v|mkv|mov|avi|wmv|webm|flv)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex TrailingDashRegex = new(
+        @"\s*[-–—]\s*$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex DetailsPromo1Regex = new(
+        @"\s*(?:-\s*JustTheGays\s*-\s*)?Jerk to (?:hot gay porn|the hottest and best gay porn).*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex DetailsPromo2Regex = new(
+        @"\s*(?:Thousands|Endless) hours of .*?$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex DetailsPromo3Regex = new(
+        @"\s*Stream the hottest and newest gay porn videos for free.*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private IServiceProvider? _services;
 
     private static readonly ScraperDescriptor VideoDescriptor = new(
@@ -438,7 +502,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         var results = new List<ScrapedVideoDto>();
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (Match match in Regex.Matches(html, @"(?is)<a\b[^>]*href\s*=\s*['""](?<href>https?://(?:www\.)?justthegays\.com/video/[^'""]+)['""][^>]*>(?<inner>.*?)</a>"))
+        foreach (Match match in SearchVideoLinkRegex.Matches(html))
         {
             var href = match.Groups["href"].Value.Trim();
             if (!IsSupportedVideoUrl(href) || !seenUrls.Add(href))
@@ -499,10 +563,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         if (imageUrl.Contains("gravatar.com", StringComparison.OrdinalIgnoreCase))
             return true;
 
-        return Regex.IsMatch(
-            imageUrl,
-            @"/(?:logo[a-zA-Z0-9_-]*|output-removebg-preview[a-zA-Z0-9_-]*|JustTheGays(?:-[a-zA-Z0-9_]+)?|default[a-zA-Z0-9_-]*|avatar[a-zA-Z0-9_-]*)\.(?:png|jpg|jpeg|webp)(?:\?|$)",
-            RegexOptions.IgnoreCase);
+        return GenericLogoRegex.IsMatch(imageUrl);
     }
 
     private static ScrapedVideoDto MergeVideoResults(ScrapedVideoDto primary, ScrapedVideoDto secondary)
@@ -530,14 +591,12 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         var performers = new List<string>();
 
         // 1. Look specifically in post-tags or post-terms container if available
-        var postTagsMatch = Regex.Match(
-            html,
-            @"(?is)<div\b[^>]*class\s*=\s*['""][^'""]*\b(?:post-tags|post-terms)\b[^'""]*['""][^>]*>(?<content>.*?)</div>");
+        var postTagsMatch = PostTagsDivRegex.Match(html);
 
         if (postTagsMatch.Success)
         {
             var content = postTagsMatch.Groups["content"].Value;
-            foreach (Match match in Regex.Matches(content, @"(?is)<a\b[^>]*href\s*=\s*['""]https?://(?:www\.)?justthegays\.com/performers/[^'""]+['""][^>]*>(?<name>.*?)</a>"))
+            foreach (Match match in PostTagsPerformerLinkRegex.Matches(content))
             {
                 var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
                 if (!string.IsNullOrWhiteSpace(name))
@@ -549,8 +608,8 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         }
 
         // 2. Fall back to wider search scope requiring rel="tag" and excluding menus
-        var searchScope = Regex.Replace(html, @"(?is)<(?:nav|div|aside)\b[^>]*id\s*=\s*['""][^'""]*(?:sidebar|footer|menu)[^'""]*['""][^>]*>.*?</(?:nav|div|aside)>", string.Empty);
-        searchScope = Regex.Replace(searchScope, @"(?is)<ul\b[^>]*class\s*=\s*['""][^'""]*\bmenu\b[^'""]*['""][^>]*>.*?</ul>", string.Empty);
+        var searchScope = SidebarFooterMenuRegex.Replace(html, string.Empty);
+        searchScope = MenuUlRegex.Replace(searchScope, string.Empty);
 
         foreach (Match match in PerformerLinkRegex.Matches(searchScope))
         {
@@ -573,7 +632,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
     private static string? ExtractVideoThumbnail(string html)
     {
         // 1. JSON-LD VideoObject.thumbnailUrl or image
-        var jsonLdMatches = Regex.Matches(html, @"(?is)<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(.*?)</script>");
+        var jsonLdMatches = JsonLdBlockRegex.Matches(html);
         foreach (Match match in jsonLdMatches)
         {
             var json = match.Groups[1].Value.Trim();
@@ -660,7 +719,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
                     }
                 }
 
-                var fullSize = candidateUrls.FirstOrDefault(u => !Regex.IsMatch(u, @"-\d+x\d+\.[a-zA-Z0-9]+(?:\?|$)"));
+                var fullSize = candidateUrls.FirstOrDefault(u => !WpSizedImageSuffixRegex.IsMatch(u));
                 var candidate = fullSize ?? candidateUrls.FirstOrDefault();
                 if (!string.IsNullOrWhiteSpace(candidate))
                     return candidate;
@@ -688,7 +747,7 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
 
     private static string ExtractPrimaryArticleHtml(string html)
     {
-        var match = Regex.Match(html, @"(?is)<article\b[^>]*>.*?</article>");
+        var match = ArticleBlockRegex.Match(html);
         return match.Success ? match.Value : html;
     }
 
@@ -699,27 +758,14 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
             return string.Empty;
 
         // Strip from ' - JustTheGays.com' and all following text to the end
-        cleaned = Regex.Replace(
-            cleaned,
-            @"\s*[-–—]\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-
-        cleaned = Regex.Replace(
-            cleaned,
-            @"\s*\|\s*Just\s*The\s*Gays(?:\.com)?\b.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
+        cleaned = TitleDashSuffixRegex.Replace(cleaned, string.Empty);
+        cleaned = TitlePipeSuffixRegex.Replace(cleaned, string.Empty);
 
         // Strip trailing common video media extensions if present
-        cleaned = Regex.Replace(
-            cleaned,
-            @"\.(?:mp4|m4v|mkv|mov|avi|wmv|webm|flv)$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
+        cleaned = VideoFileExtSuffixRegex.Replace(cleaned, string.Empty);
 
         // Strip any residual trailing dash or punctuation left after stripping
-        cleaned = Regex.Replace(cleaned, @"\s*[-–—]\s*$", string.Empty);
+        cleaned = TrailingDashRegex.Replace(cleaned, string.Empty);
 
         return ScraperUtilities.CleanText(cleaned) ?? string.Empty;
     }
@@ -746,21 +792,9 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
                 RegexOptions.IgnoreCase);
         }
 
-        text = Regex.Replace(
-            text,
-            @"\s*(?:-\s*JustTheGays\s*-\s*)?Jerk to (?:hot gay porn|the hottest and best gay porn).*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-        text = Regex.Replace(
-            text,
-            @"\s*(?:Thousands|Endless) hours of .*?$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
-        text = Regex.Replace(
-            text,
-            @"\s*Stream the hottest and newest gay porn videos for free.*$",
-            string.Empty,
-            RegexOptions.IgnoreCase);
+        text = DetailsPromo1Regex.Replace(text, string.Empty);
+        text = DetailsPromo2Regex.Replace(text, string.Empty);
+        text = DetailsPromo3Regex.Replace(text, string.Empty);
 
         return ScraperUtilities.CleanText(text);
     }
@@ -923,6 +957,6 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
     private HttpClient CreateHttpClient()
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(VideoScraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(VideoScraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

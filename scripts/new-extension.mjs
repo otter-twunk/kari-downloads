@@ -46,28 +46,35 @@ function toPascalCase(str) {
 function usage() {
   console.error(`Usage:
   node scripts/new-extension.mjs \\
-    --kind <downloader|scraper|scraper-pack> \\
+    --kind <downloader|scraper|scraper-pack|plugin> \\
     --name <PascalCaseExtensionName> \\
-    --domain <example.com> \\
-    [--id <karinauts.downloaders.slug>] \\
+    [--domain <example.com>] \\
+    [--id <karinauts.tools.slug>] \\
     [--title "Human Readable Name"] \\
     [--entity <Video|Image|Gallery|Audio|Text|Performer>] \\
+    [--categories "ui,tools"] \\
     [--tag-prefix <slug/>] \\
-    [--min-cove-version <1.6.0>]
+    [--min-cove-version <1.7.0>]
 `);
   process.exit(1);
 }
 
 const args = parseArgs(process.argv.slice(2));
 const kind = (args.kind ?? "").toLowerCase();
-if (!["downloader", "scraper", "scraper-pack"].includes(kind) || !args.name || !args.domain) {
+const validKinds = ["downloader", "scraper", "scraper-pack", "plugin", "tool", "ui"];
+const isPluginKind = ["plugin", "tool", "ui"].includes(kind);
+
+if (!validKinds.includes(kind) || !args.name || (!isPluginKind && !args.domain)) {
   usage();
 }
 
 const name = toPascalCase(args.name);
-const domain = args.domain.replace(/^https?:\/\//i, "").replace(/\/.*$/, "").toLowerCase();
+const domain = (args.domain ?? "")
+  .replace(/^https?:\/\//i, "")
+  .replace(/\/.*$/, "")
+  .toLowerCase();
 const baseSlug = toKebabCase(
-  name.replace(/(Downloader|Scraper|Pack|Extension)$/i, "") || domain.split(".")[0]
+  name.replace(/(Downloader|Scraper|Pack|Extension|Plugin|Tool|Ui)$/i, "") || (domain ? domain.split(".")[0] : name)
 );
 const id =
   args.id ??
@@ -75,7 +82,9 @@ const id =
     ? `karinauts.downloaders.${baseSlug}`
     : kind === "scraper-pack"
       ? `karinauts.scrapers.pack.${baseSlug}`
-      : `karinauts.scrapers.${baseSlug}`);
+      : kind === "scraper"
+        ? `karinauts.scrapers.${baseSlug}`
+        : `karinauts.tools.${baseSlug}`);
 
 const tagPrefix = (args["tag-prefix"] ?? `${toKebabCase(name)}/`).replace(/\/?$/, "/");
 const displayName =
@@ -189,9 +198,9 @@ const csprojContent = `<Project Sdk="Microsoft.NET.Sdk">
     <RootNamespace>${name}</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup>
+  ${isPluginKind ? "" : `<ItemGroup>
     <Compile Include="..\\Shared\\${kind === "downloader" ? "DownloaderUtilities.cs" : "ScraperUtilities.cs"}" Link="Shared\\${kind === "downloader" ? "DownloaderUtilities.cs" : "ScraperUtilities.cs"}" />
-  </ItemGroup>
+  </ItemGroup>`}
 
 </Project>
 `;
@@ -203,27 +212,132 @@ const manifest = {
   version: "0.1.0",
   description:
     args.description ??
-    (kind === "downloader"
-      ? `Downloads ${entity.toLowerCase()} media and inline metadata from ${domain}.`
-      : `Scrapes ${entity.toLowerCase()} metadata and search candidates from ${domain}.`),
+    (isPluginKind
+      ? `${displayName} plugin for Cove.`
+      : kind === "downloader"
+        ? `Downloads ${entity.toLowerCase()} media and inline metadata from ${domain}.`
+        : `Scrapes ${entity.toLowerCase()} metadata and search candidates from ${domain}.`),
   author,
   url: repoUrl,
   categories:
-    kind === "downloader"
-      ? ["downloader", entity.toLowerCase(), "metadata"]
-      : ["scraper", "metadata", entity.toLowerCase()],
+    isPluginKind
+      ? (args.categories ? args.categories.split(",").map(c => c.trim().toLowerCase()) : ["ui", "tools"])
+      : kind === "downloader"
+        ? ["downloader", entity.toLowerCase(), "metadata"]
+        : ["scraper", "metadata", entity.toLowerCase()],
   minCoveVersion,
   entryDll: `${name}.dll`,
+  ...(isPluginKind
+    ? {
+        jsBundle: "dist/bundle.js",
+        cssBundle: "dist/bundle.css"
+      }
+    : {}),
   dependencies: {},
   permissions: {
-    network: [domain, `*.${domain}`],
+    network: domain ? [domain, `*.${domain}`] : [],
     scraperRuntime: kind === "scraper" ? [domain, `*.${domain}`] : [],
     downloaderRuntime: kind === "downloader" ? [domain, `*.${domain}`] : []
   }
 };
 fs.writeFileSync(path.join(extensionDir, "extension.json"), JSON.stringify(manifest, null, 2) + "\n");
 
-if (kind === "downloader") {
+if (isPluginKind) {
+  const csContent = `using Cove.Plugins;
+using Cove.Sdk;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace ${name};
+
+public sealed class ${name}Extension : CoveExtensionBase, IUIExtension, IApiExtension
+{
+    public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
+    {
+    }
+
+    public override UIManifest GetUIManifest()
+    {
+        return ManifestBuilder()
+            .WithRuntimeVersion("v1")
+            .WithJsBundle("dist/bundle.js")
+            .WithCssBundle("dist/bundle.css")
+            .AddPage(
+                route: "${toKebabCase(name)}",
+                label: "${displayName}",
+                componentName: "${name}Page",
+                icon: "wrench",
+                showInNav: true,
+                navOrder: 60)
+            .Build();
+    }
+
+    public void MapEndpoints(IEndpointRouteBuilder endpoints)
+    {
+        var group = endpoints.MapGroup("/api/ext/${toKebabCase(name)}");
+        group.MapGet("/status", () => Results.Ok(new { status = "active", extension = "${name}" }));
+    }
+}
+`;
+  fs.writeFileSync(path.join(extensionDir, `${name}Extension.cs`), csContent);
+
+  const uiDir = path.join(extensionDir, "ui");
+  fs.mkdirSync(uiDir, { recursive: true });
+
+  const uiEntryContent = `import { ${name}Page } from "./${name}Page";
+
+export default {
+  components: {
+    ${name}Page,
+  },
+};
+`;
+  fs.writeFileSync(path.join(uiDir, `${name}.tsx`), uiEntryContent);
+
+  const uiPageContent = `import React, { useState, useEffect } from "react";
+import { Wrench, CheckCircle } from "lucide-react";
+import { extensionFetch } from "@cove/runtime/api";
+
+export function ${name}Page() {
+  const [status, setStatus] = useState<string>("loading");
+
+  useEffect(() => {
+    async function check() {
+      try {
+        const res = await extensionFetch("/api/ext/${toKebabCase(name)}/status");
+        if (res.ok) {
+          const data = await res.json();
+          setStatus(data.status);
+        } else {
+          setStatus("ready");
+        }
+      } catch {
+        setStatus("ready");
+      }
+    }
+    check();
+  }, []);
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto space-y-4">
+      <div className="flex items-center gap-3">
+        <Wrench className="w-8 h-8 text-[var(--color-primary)]" />
+        <h1 className="text-2xl font-bold text-[var(--text-primary)]">${displayName}</h1>
+      </div>
+      <div className="bg-[var(--bg-surface)] border border-[var(--border-subtle)] rounded-xl p-6 shadow-sm">
+        <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+          <CheckCircle className="w-4 h-4 text-emerald-500" />
+          <span>Plugin backend status: <strong className="text-[var(--text-primary)]">{status}</strong></span>
+        </div>
+      </div>
+    </div>
+  );
+}
+`;
+  fs.writeFileSync(path.join(uiDir, `${name}Page.tsx`), uiPageContent);
+} else if (kind === "downloader") {
   const downloaderId = `${id}.${entity.toLowerCase()}`;
   const csContent = `using System.Text.RegularExpressions;
 using Cove.Core.DTOs;
@@ -569,8 +683,30 @@ if (fs.existsSync(testsProjPath)) {
   const testFilePath = path.join(path.dirname(testsProjPath), `${name}Tests.cs`);
   if (!fs.existsSync(testFilePath)) {
     const testContent =
-      kind === "downloader"
+      isPluginKind
         ? `using Cove.Plugins;
+using KariDownloads.Tests.Infrastructure;
+using ${name};
+
+namespace KariDownloads.Tests;
+
+public sealed class ${name}Tests
+{
+    [Fact]
+    public async Task GetUIManifest_RegistersPageDefinition()
+    {
+        using var harness = new FakeDownloaderHost();
+        var extension = new ${name}Extension();
+        await extension.InitializeAsync(harness.Services);
+
+        var manifest = extension.GetUIManifest();
+        Assert.NotNull(manifest);
+        Assert.Contains(manifest.Pages, p => p.ComponentName == "${name}Page");
+    }
+}
+`
+        : kind === "downloader"
+          ? `using Cove.Plugins;
 using KariDownloads.Tests.Infrastructure;
 using ${name};
 

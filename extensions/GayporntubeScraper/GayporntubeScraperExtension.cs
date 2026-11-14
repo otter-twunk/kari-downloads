@@ -281,6 +281,6 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
     private HttpClient CreateHttpClient()
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryScraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryScraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

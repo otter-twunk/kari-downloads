@@ -117,53 +117,67 @@ export function BatchDownloadPage() {
     });
   }, [extractedUrls, defaultEntity]);
 
-  // Preflight inspection
+  // Preflight inspection with bounded concurrency
   const inspectUrls = async () => {
     if (items.length === 0) return;
     setIsInspecting(true);
 
-    const updated = [...items];
-    for (let i = 0; i < updated.length; i++) {
-      const item = updated[i];
-      item.status = "inspecting";
-      setItems([...updated]);
+    const updated = items.map((item) => ({ ...item, status: "inspecting" as const }));
+    setItems(updated);
 
-      try {
-        const res = await fetch("/api/system/downloaders/match", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: item.rawUrl }),
-        });
+    const concurrency = Math.min(4, updated.length);
+    let cursor = 0;
 
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
+    const worker = async () => {
+      while (cursor < updated.length) {
+        const index = cursor++;
+        const item = updated[index];
+        try {
+          const res = await fetch("/api/system/downloaders/match", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url: item.rawUrl }),
+          });
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+
+          const matches = await res.json();
+          if (Array.isArray(matches) && matches.length > 0) {
+            const matched = matches[0];
+            const detected = matched.supportedEntity || "Video";
+            updated[index] = {
+              ...item,
+              downloaderId: matched.downloaderId,
+              downloaderName: matched.downloaderName,
+              detectedEntity: detected,
+              normalizedUrl: matched.normalizedUrl || item.rawUrl,
+              label: matched.label || undefined,
+              qualityOptions: matched.qualityOptions ?? [],
+              selectedQualityId: "", // Empty allows Cove 1.8+ MaxDownloadHeight to govern resolution
+              targetEntity: defaultEntity === "auto" ? detected : defaultEntity,
+              status: "matched",
+            };
+          } else {
+            updated[index] = {
+              ...item,
+              status: "unsupported",
+              statusMessage: "No downloader matched this URL",
+            };
+          }
+        } catch (err: any) {
+          updated[index] = {
+            ...item,
+            status: "error",
+            statusMessage: err?.message || "Failed to inspect URL",
+          };
         }
-
-        const matches = await res.json();
-        if (Array.isArray(matches) && matches.length > 0) {
-          const matched = matches[0];
-          const detected = matched.supportedEntity || "Video";
-          item.downloaderId = matched.downloaderId;
-          item.downloaderName = matched.downloaderName;
-          item.detectedEntity = detected;
-          item.normalizedUrl = matched.normalizedUrl || item.rawUrl;
-          item.label = matched.label || undefined;
-          item.qualityOptions = matched.qualityOptions ?? [];
-          item.selectedQualityId = matched.qualityOptions?.[0]?.id;
-          item.targetEntity = defaultEntity === "auto" ? detected : defaultEntity;
-          item.status = "matched";
-        } else {
-          item.status = "unsupported";
-          item.statusMessage = "No downloader matched this URL";
-        }
-      } catch (err: any) {
-        item.status = "error";
-        item.statusMessage = err?.message || "Failed to inspect URL";
+        setItems([...updated]);
       }
+    };
 
-      setItems([...updated]);
-    }
-
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
     setIsInspecting(false);
   };
 
@@ -184,59 +198,67 @@ export function BatchDownloadPage() {
 
       const hasCustomMetadata = tagIds.length > 0 || performerIds.length > 0 || studioId !== null;
 
-      const batchItems = [];
+      const batchItems = new Array<Record<string, any>>(items.length);
+      const concurrency = Math.min(4, items.length);
+      let cursor = 0;
 
-      for (const item of items) {
-        let entityId: number | undefined;
+      const createWorker = async () => {
+        while (cursor < items.length) {
+          const idx = cursor++;
+          const item = items[idx];
+          let entityId: number | undefined;
 
-        // If user specified custom tags, performers, or studio, create placeholder entity first
-        if (hasCustomMetadata) {
-          try {
-            const entityType = item.targetEntity.toLowerCase();
-            const payload: Record<string, any> = {
-              title: item.label || item.normalizedUrl,
-              urls: [item.normalizedUrl],
-              tagIds,
-              performerIds,
-              studioId: studioId ?? undefined,
-            };
+          // If user specified custom tags, performers, or studio, create placeholder entity first
+          if (hasCustomMetadata) {
+            try {
+              const entityType = item.targetEntity.toLowerCase();
+              const payload: Record<string, any> = {
+                title: item.label || item.normalizedUrl,
+                urls: [item.normalizedUrl],
+                tagIds,
+                performerIds,
+                studioId: studioId ?? undefined,
+              };
 
-            const endpoint =
-              entityType === "video"
-                ? "/api/videos"
-                : entityType === "gallery"
-                ? "/api/galleries"
-                : entityType === "image"
-                ? "/api/images"
-                : "/api/audios";
+              const endpoint =
+                entityType === "video"
+                  ? "/api/videos"
+                  : entityType === "gallery"
+                  ? "/api/galleries"
+                  : entityType === "image"
+                  ? "/api/images"
+                  : "/api/audios";
 
-            const createRes = await fetch(endpoint, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
+              const createRes = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
 
-            if (createRes.ok) {
-              const createdData = await createRes.json();
-              entityId = createdData.id;
+              if (createRes.ok) {
+                const createdData = await createRes.json();
+                entityId = createdData.id;
+              }
+            } catch (e) {
+              console.error("Failed to pre-create entity with metadata, falling back to server placeholder", e);
             }
-          } catch (e) {
-            console.error("Failed to pre-create entity with metadata, falling back to server placeholder", e);
           }
-        }
 
-        batchItems.push({
-          downloaderId: item.downloaderId,
-          url: item.normalizedUrl,
-          entity: item.targetEntity,
-          entityId: entityId ?? null,
-          qualityId: item.selectedQualityId,
-          label: item.label || item.rawUrl,
-          title: item.label || item.rawUrl,
-          createEntityIfMissing: entityId ? false : true,
-          autoApplyMetadata,
-        });
-      }
+          batchItems[idx] = {
+            downloaderId: item.downloaderId,
+            url: item.normalizedUrl,
+            entity: item.targetEntity,
+            entityId: entityId ?? null,
+            qualityId: item.selectedQualityId || null,
+            label: item.label || item.rawUrl,
+            title: item.label || item.rawUrl,
+            createEntityIfMissing: entityId ? false : true,
+            autoApplyMetadata,
+          };
+        }
+      };
+
+      await Promise.all(Array.from({ length: concurrency }, () => createWorker()));
 
       const res = await fetch("/api/system/downloaders/download-batch", {
         method: "POST",
@@ -298,10 +320,10 @@ export function BatchDownloadPage() {
         const j = await r.json();
         setActiveJob({
           jobId: j.id,
-          title: j.title,
+          title: j.description ?? j.title ?? "Batch Download",
           status: j.status,
           progress: Math.round((j.progress || 0) * 100),
-          message: j.statusMessage,
+          message: j.subTask ?? j.statusMessage,
         });
       } catch (err) {
         console.error("Failed to poll job status", err);
@@ -701,7 +723,7 @@ export function BatchDownloadPage() {
                     <td className="py-2.5 px-3 whitespace-nowrap">
                       {item.qualityOptions && item.qualityOptions.length > 0 ? (
                         <select
-                          value={item.selectedQualityId}
+                          value={item.selectedQualityId ?? ""}
                           onChange={(e) => {
                             const val = e.target.value;
                             setItems((prev) =>
@@ -710,6 +732,7 @@ export function BatchDownloadPage() {
                           }}
                           className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none"
                         >
+                          <option value="">Auto (Max Height)</option>
                           {item.qualityOptions.map((q) => (
                             <option key={q.id} value={q.id}>
                               {q.label}
@@ -717,7 +740,7 @@ export function BatchDownloadPage() {
                           ))}
                         </select>
                       ) : (
-                        <span className="text-muted text-[11px]">Best</span>
+                        <span className="text-muted text-[11px]">Auto (Max Height)</span>
                       )}
                     </td>
 

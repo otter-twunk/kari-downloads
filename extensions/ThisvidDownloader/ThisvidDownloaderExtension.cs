@@ -451,15 +451,19 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
                 return exact;
         }
 
-        if (maxHeight != null)
+        if (maxHeight is > 0)
         {
             var matchingHeight = streams
-                .Where(s => s.Height != null && s.Height <= maxHeight)
+                .Where(s => s.Height is > 0 && s.Height <= maxHeight.Value)
                 .OrderByDescending(s => s.Height)
                 .FirstOrDefault();
 
             if (matchingHeight != null)
                 return matchingHeight;
+
+            var fallback = streams.FirstOrDefault(s => s.Height == null);
+            if (fallback != null)
+                return fallback;
         }
 
         return streams
@@ -536,7 +540,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
             return host.HttpClients.CreateClient(PrimaryDownloaderId);
 
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
     public sealed record MediaStream(

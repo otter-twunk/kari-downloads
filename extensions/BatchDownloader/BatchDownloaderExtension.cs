@@ -41,30 +41,46 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
             CancellationToken ct) =>
         {
             var urls = ExtractUrls(request.RawText, request.Urls);
-            var matches = new List<object>();
+            var results = new object[urls.Count];
+            using var semaphore = new SemaphoreSlim(4, 4);
 
-            foreach (var url in urls)
+            var tasks = urls.Select(async (url, index) =>
             {
-                var urlMatches = await downloaderService.MatchUrlAsync(url, ct);
-                var best = urlMatches.FirstOrDefault();
-                matches.Add(new
+                await semaphore.WaitAsync(ct);
+                try
                 {
-                    url,
-                    matched = best != null,
-                    downloaderId = best?.DownloaderId,
-                    downloaderName = best?.DownloaderName,
-                    supportedEntity = best?.SupportedEntity,
-                    normalizedUrl = best?.NormalizedUrl ?? url,
-                    label = best?.Label ?? url
-                });
-            }
+                    var urlMatches = await downloaderService.MatchUrlAsync(url, ct);
+                    var best = urlMatches.FirstOrDefault();
+                    results[index] = new
+                    {
+                        url,
+                        matched = best != null,
+                        downloaderId = best?.DownloaderId,
+                        downloaderName = best?.DownloaderName,
+                        supportedEntity = best?.SupportedEntity,
+                        normalizedUrl = best?.NormalizedUrl ?? url,
+                        label = best?.Label ?? url
+                    };
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            });
 
-            return Results.Ok(new { count = matches.Count, matches });
-        }).AllowWithoutCovePermission();
+            await Task.WhenAll(tasks);
+
+            return Results.Ok(new { count = results.Length, matches = results });
+        })
+        .AllowWithoutCovePermission()
+        .WithTags("Batch Downloader")
+        .WithSummary("Inspect URLs against installed Cove downloaders")
+        .WithDescription("Extracts HTTP/HTTPS URLs from rawText or urls and matches each URL against registered IDownloaderProvider extensions concurrently.");
 
         endpoints.MapPost("/api/ext/batch-downloader/queue", async (
             BatchQueueApiRequest request,
             IDownloaderService downloaderService,
+            IServiceScopeFactory scopeFactory,
             IJobService jobService,
             IVideoRepository videoRepo,
             IGalleryRepository galleryRepo,
@@ -137,7 +153,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     entityType,
                     entityId,
                     label,
-                    match.QualityOptions?.FirstOrDefault()?.Id,
+                    null, // null allows Cove 1.8+ MaxDownloadHeight to govern stream resolution
                     match.SourceUrl));
             }
 
@@ -158,6 +174,9 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 $"Downloading {queuedItems.Count} item{(queuedItems.Count == 1 ? "" : "s")}",
                 async (progress, jobCt) =>
                 {
+                    await using var scope = scopeFactory.CreateAsyncScope();
+                    var scopedDownloader = scope.ServiceProvider.GetRequiredService<IDownloaderService>();
+
                     for (var i = 0; i < queuedItems.Count; i++)
                     {
                         if (jobCt.IsCancellationRequested) break;
@@ -165,7 +184,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                         progress.Report((double)i / queuedItems.Count, $"Downloading ({i + 1}/{queuedItems.Count}): {item.Label}");
                         try
                         {
-                            await downloaderService.DownloadAndImportAsync(
+                            await scopedDownloader.DownloadAndImportAsync(
                                 new DownloaderImportRequest(item.DownloaderId, item.Url, item.Entity, item.EntityId, item.QualityId, item.SourceUrl)
                                 {
                                     AllowDuplicateDownload = allowDuplicates
@@ -190,7 +209,11 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 queued = queuedItems.Select(q => new { q.Url, entity = q.Entity.ToString(), q.Label, q.EntityId }),
                 skipped = skippedItems
             });
-        }).AllowWithoutCovePermission();
+        })
+        .AllowWithoutCovePermission()
+        .WithTags("Batch Downloader")
+        .WithSummary("Queue a batch of URLs for background download and import")
+        .WithDescription("Matches URLs, optionally pre-creates tagged library entities, and enqueues a background download-batch job respecting Cove MaxDownloadHeight.");
     }
 
     public static List<string> ExtractUrls(string? rawText, IEnumerable<string>? urls)

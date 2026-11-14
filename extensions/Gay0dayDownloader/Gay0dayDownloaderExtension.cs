@@ -394,7 +394,7 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
             return host.HttpClients.CreateClient(PrimaryDownloaderId);
 
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
     internal sealed record ResolvedMediaPage(

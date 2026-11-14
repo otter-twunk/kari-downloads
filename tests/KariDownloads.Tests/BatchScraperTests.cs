@@ -72,11 +72,11 @@ public sealed class BatchScraperTests
 
         Assert.Equal("karinauts.tools.batch-scraper", root.GetProperty("id").GetString());
         Assert.Equal("Batch Video Scraper", root.GetProperty("name").GetString());
-        Assert.Equal("0.1.1", root.GetProperty("version").GetString());
+        Assert.Equal("0.1.2", root.GetProperty("version").GetString());
         Assert.Equal("BatchScraper.dll", root.GetProperty("entryDll").GetString());
         Assert.Equal("dist/bundle.js", root.GetProperty("jsBundle").GetString());
         Assert.Equal("dist/bundle.css", root.GetProperty("cssBundle").GetString());
-        Assert.Equal("1.7.0", root.GetProperty("minCoveVersion").GetString());
+        Assert.Equal("1.8.0", root.GetProperty("minCoveVersion").GetString());
 
         var categories = root.GetProperty("categories").EnumerateArray().Select(c => c.GetString()).ToList();
         Assert.Contains("ui", categories);

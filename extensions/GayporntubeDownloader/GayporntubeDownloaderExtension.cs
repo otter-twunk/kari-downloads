@@ -332,7 +332,7 @@ public sealed class GayporntubeDownloaderExtension : CoveExtensionBase, IDownloa
             return host.HttpClients.CreateClient(PrimaryDownloaderId);
 
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
     public sealed record ResolvedMediaPage(

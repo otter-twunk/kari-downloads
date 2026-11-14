@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "batch-video-scraper",
+  "title": "Batch Video Scraper",
+  "description": "Bulk-scrape selected videos with field-level metadata blending strategies (merge, replace, overwrite, or fill empty).",
+  "order": 20,
+  "sections": [
+    {
+      "id": "workflow",
+      "title": "Bulk Scraping Workflow",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Select multiple videos on the Videos list page and choose Scrape All from the bulk action bar to launch the Batch Video Scraper modal."
+        },
+        {
+          "type": "steps",
+          "items": [
+            "Choose the target Video Scraper from the dropdown.",
+            "Configure how each metadata field (Title, Date, Details, Cover, Studio, Performers, Tags, URLs) should be blended.",
+            "Set the request concurrency (1–4) to balance speed against site rate limits.",
+            "Click Start Batch Scrape to monitor live per-video progress."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "blend-strategies",
+      "title": "Metadata Blend Strategies",
+      "blocks": [
+        {
+          "type": "table",
+          "columns": ["Strategy", "Behavior"],
+          "rows": [
+            ["If Empty / If Missing", "Populates the field only when the video does not already have a value"],
+            ["Overwrite / Replace", "Replaces existing values with the newly scraped metadata"],
+            ["Merge (Collections)", "Appends new performers, tags, or URLs while keeping existing entries"],
+            ["Skip", "Leaves the existing field untouched"]
+          ]
+        }
+      ]
+    }
+  ]
+}

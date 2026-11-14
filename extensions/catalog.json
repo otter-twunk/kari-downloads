@@ -114,6 +114,12 @@
       "id": "karinauts.scrapers.thisvid",
       "path": "extensions/ThisvidScraper",
       "tagPrefix": "thisvid-scraper/"
+    },
+    {
+      "name": "ExtensionUpdater",
+      "id": "karinauts.tools.extension-updater",
+      "path": "extensions/ExtensionUpdater",
+      "tagPrefix": "extension-updater/"
     }
   ]
 }

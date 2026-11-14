@@ -383,6 +383,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
     private HttpClient CreateHttpClient()
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(VideoScraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(VideoScraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

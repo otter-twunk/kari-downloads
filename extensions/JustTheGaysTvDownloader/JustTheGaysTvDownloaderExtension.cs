@@ -845,10 +845,12 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
 
                 var totalBytes = response.Content.Headers.ContentLength.GetValueOrDefault() + existingLength;
                 await using (var input = await response.Content.ReadAsStreamAsync(ct))
-                await using (var output = new FileStream(destinationPath, existingLength > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None))
+                await using (var output = new FileStream(destinationPath, existingLength > 0 ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 64 * 1024, useAsync: true))
                 {
                     var buffer = new byte[64 * 1024];
                     var totalRead = existingLength;
+                    var lastReportedProgress = 10.0;
+                    var lastReportTick = Environment.TickCount64;
                     int bytesRead;
 
                     while ((bytesRead = await input.ReadAsync(buffer, ct)) > 0)
@@ -860,7 +862,13 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                         {
                             var fraction = Math.Clamp((double)totalRead / totalBytes, 0.0, 1.0);
                             var progress = 10.0 + (85.0 * fraction);
-                            host.ReportProgress(progress, $"Downloaded {totalRead / 1024:N0} KB of {totalBytes / 1024:N0} KB");
+                            var now = Environment.TickCount64;
+                            if (progress - lastReportedProgress >= 0.5 || now - lastReportTick >= 250)
+                            {
+                                lastReportedProgress = progress;
+                                lastReportTick = now;
+                                host.ReportProgress(progress, $"Downloaded {totalRead / 1024:N0} KB of {totalBytes / 1024:N0} KB");
+                            }
                         }
                     }
                 }
@@ -1364,7 +1372,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             return host.HttpClients.CreateClient(PrimaryDownloaderId);
 
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
     internal sealed record ResolvedMediaPage(

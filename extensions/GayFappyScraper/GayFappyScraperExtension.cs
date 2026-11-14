@@ -887,6 +887,6 @@ public sealed class GayFappyScraperExtension : CoveExtensionBase, IScraperProvid
     private HttpClient CreateHttpClient()
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryVideoScraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryVideoScraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

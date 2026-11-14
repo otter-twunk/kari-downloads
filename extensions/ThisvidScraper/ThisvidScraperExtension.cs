@@ -341,6 +341,6 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
     private HttpClient CreateHttpClient()
     {
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(PrimaryScraperId) : new HttpClient();
+        return factory != null ? factory.CreateClient(PrimaryScraperId) : ScraperUtilities.CreateFallbackHttpClient();
     }
 }

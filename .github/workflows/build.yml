@@ -163,3 +163,61 @@ jobs:
         with:
           files: '*.zip'
           generate_release_notes: true
+      - name: Update rolling latest release & manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          # Ensure the rolling 'latest' release exists (never marked as repo's latest release)
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest \
+              --title "Latest Rolling Releases" \
+              --notes "Static rolling-release ZIPs and latest-manifest.json for automatic/static-URL updates." \
+              --latest=false
+          fi
+
+          # Fetch existing latest-manifest.json if present
+          if ! gh release download latest -p "latest-manifest.json" -O latest-manifest.json 2>/dev/null; then
+            echo '{"schemaVersion":1,"extensions":{}}' > latest-manifest.json
+          fi
+
+          UPLOAD_FILES=("latest-manifest.json")
+
+          for zip in *.zip; do
+            [ -f "$zip" ] || continue
+            # Skip any *-latest.zip if already present
+            [[ "$zip" == *-latest.zip ]] && continue
+
+            unzip -p "$zip" extension.json > current-extension.json
+            LATEST_ZIP=$(node -e '
+              const fs = require("fs");
+              const ext = JSON.parse(fs.readFileSync("current-extension.json", "utf8"));
+              const manifest = JSON.parse(fs.readFileSync("latest-manifest.json", "utf8"));
+              manifest.schemaVersion = 1;
+              manifest.updatedAt = new Date().toISOString();
+              manifest.extensions = manifest.extensions || {};
+              const latestZipName = `${ext.id}-latest.zip`;
+              const repo = process.env.GITHUB_REPOSITORY;
+              const tag = process.env.GITHUB_REF_NAME;
+              manifest.extensions[ext.id] = {
+                id: ext.id,
+                name: ext.name || ext.id,
+                version: ext.version,
+                description: ext.description || "",
+                minCoveVersion: ext.minCoveVersion || null,
+                downloadUrl: `https://github.com/${repo}/releases/download/latest/${latestZipName}`,
+                versionedUrl: `https://github.com/${repo}/releases/download/${tag}/${process.argv[1]}`,
+                updatedAt: new Date().toISOString()
+              };
+              fs.writeFileSync("latest-manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+              process.stdout.write(latestZipName);
+            ' "$zip")
+
+            cp "$zip" "$LATEST_ZIP"
+            UPLOAD_FILES+=("$LATEST_ZIP")
+          done
+
+          gh release upload latest "${UPLOAD_FILES[@]}" --clobber

@@ -22,6 +22,14 @@ internal static class ScraperUtilities
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex DefaultCodeRegex = new(@"\b([A-Z]{2,6}-\d{2,5})\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly SocketsHttpHandler FallbackSocketsHandler = new()
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate | DecompressionMethods.Brotli
+    };
+
+    public static HttpClient CreateFallbackHttpClient() => new(FallbackSocketsHandler, disposeHandler: false);
+
     private static readonly string[] CommonDateFormats =
     [
         "yyyy-MM-dd",

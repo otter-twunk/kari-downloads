@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "batch-url-downloader",
+  "title": "Batch URL Downloader",
+  "description": "Paste multiple media URLs, inspect compatible Cove downloaders, apply initial metadata tags, and queue background batch downloads.",
+  "order": 10,
+  "sections": [
+    {
+      "id": "quick-start",
+      "title": "Quick Start",
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Open Paste & Download from the navigation bar to extract HTTP/HTTPS URLs from plain text, Markdown, or chat logs and queue them into your Cove library."
+        },
+        {
+          "type": "steps",
+          "items": [
+            "Paste one or more URLs into the Paste URLs box. Duplicate and trailing punctuation are cleaned automatically.",
+            "Optionally select a Studio, Tags, or Performers under Initial Metadata Tagging to pre-tag every queued item.",
+            "Click Inspect Downloaders to check which installed downloader matches each URL and preview available quality options.",
+            "Click Queue Downloads to start the background download job."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "quality-and-max-height",
+      "title": "Quality & Max Download Height",
+      "blocks": [
+        {
+          "type": "note",
+          "text": "By default, every inspected URL uses Auto (Max Height), which defers to Cove's MaxDownloadHeight setting so your resolution cap is always respected."
+        },
+        {
+          "type": "paragraph",
+          "text": "If you want to override your global cap for a specific item, pick an explicit stream resolution from its Quality dropdown before queueing."
+        }
+      ]
+    },
+    {
+      "id": "api-endpoints",
+      "title": "Automation API",
+      "blocks": [
+        {
+          "type": "table",
+          "columns": ["Method & Path", "Purpose"],
+          "rows": [
+            ["POST /api/ext/batch-downloader/match", "Extract and match URLs concurrently against installed downloaders"],
+            ["POST /api/ext/batch-downloader/queue", "Queue matched URLs into a background download-batch job"]
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -206,4 +206,49 @@ public sealed class ThisvidDownloaderTests
         Assert.NotNull(result);
         Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
     }
+
+    [Fact]
+    public async Task DownloadAsync_RespectsMaxHeightAndZeroCap()
+    {
+        using var harness720 = new FakeDownloaderHost()
+            .MapHtml(VideoPageUrl, RealisticThisvidHtml)
+            .MapBytes(Video720Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new ThisvidDownloaderExtension();
+        await extension.InitializeAsync(harness720.Services);
+
+        var capped = await extension.DownloadAsync(
+            new DownloaderRequest(
+                ThisvidDownloaderExtension.PrimaryDownloaderId,
+                VideoPageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["thisvid.com", "media.thisvid.com"]))
+            {
+                MaxHeight = 720
+            },
+            harness720,
+            CancellationToken.None);
+
+        Assert.NotNull(capped);
+        Assert.True(File.Exists(Path.Combine(harness720.TempDirectory, capped.LocalPath)));
+
+        using var harnessZero = new FakeDownloaderHost()
+            .MapHtml(VideoPageUrl, RealisticThisvidHtml)
+            .MapBytes(Video1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var uncapped = await extension.DownloadAsync(
+            new DownloaderRequest(
+                ThisvidDownloaderExtension.PrimaryDownloaderId,
+                VideoPageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["thisvid.com", "media.thisvid.com"]))
+            {
+                MaxHeight = 0
+            },
+            harnessZero,
+            CancellationToken.None);
+
+        Assert.NotNull(uncapped);
+        Assert.True(File.Exists(Path.Combine(harnessZero.TempDirectory, uncapped.LocalPath)));
+    }
 }

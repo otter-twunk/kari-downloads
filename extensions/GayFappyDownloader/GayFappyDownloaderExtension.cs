@@ -935,7 +935,7 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
             return host.HttpClients.CreateClient(VideoDownloaderId);
 
         var factory = _services?.GetService<IHttpClientFactory>();
-        return factory != null ? factory.CreateClient(VideoDownloaderId) : new HttpClient();
+        return factory != null ? factory.CreateClient(VideoDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
     internal sealed record ResolvedMediaPage(

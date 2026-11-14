@@ -71,6 +71,9 @@ for (const entry of entries) {
   if (fs.existsSync(path.join(extDir, "dist"))) {
     fs.cpSync(path.join(extDir, "dist"), path.join(publishDir, "dist"), { recursive: true });
   }
+  if (fs.existsSync(path.join(extDir, "docs"))) {
+    fs.cpSync(path.join(extDir, "docs"), path.join(publishDir, "docs"), { recursive: true });
+  }
   if (entry.contentOnly && fs.existsSync(path.join(extDir, "scrapers"))) {
     fs.cpSync(path.join(extDir, "scrapers"), path.join(publishDir, "scrapers"), { recursive: true });
   }

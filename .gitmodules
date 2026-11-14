@@ -1,0 +1,3 @@
+[submodule ".agents/plugins/cove-extension-builder"]
+	path = .agents/plugins/cove-extension-builder
+	url = https://github.com/otter-twunk/cove-extension-builder.git

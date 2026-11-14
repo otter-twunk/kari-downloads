@@ -9,7 +9,9 @@
     "build:ui": "node scripts/build-extension-ui.mjs",
     "test": "dotnet test MultiExtensionTemplate.slnx -c Release",
     "package": "node scripts/build-extension-ui.mjs && node scripts/package-extension.mjs",
-    "verify": "node scripts/validate-extension-repo.mjs && node scripts/build-extension-ui.mjs && dotnet test MultiExtensionTemplate.slnx -c Release && node scripts/package-extension.mjs"
+    "verify": "node scripts/validate-extension-repo.mjs && node scripts/build-extension-ui.mjs && dotnet test MultiExtensionTemplate.slnx -c Release && node scripts/package-extension.mjs",
+    "sync:agent": "node scripts/sync-agent-skills.mjs",
+    "pull:agent": "node scripts/sync-agent-skills.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2"
