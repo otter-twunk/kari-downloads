@@ -2,24 +2,26 @@
   "schemaVersion": 1,
   "id": "batch-video-scraper",
   "title": "Batch Video Scraper",
-  "description": "Bulk-scrape selected videos with field-level metadata blending strategies (merge, replace, overwrite, or fill empty).",
+  "description": "Bulk-scrape selected videos with a persistent queue, automatic URL-to-scraper routing, field-level metadata blending, and live queue controls (Skip, Pause, Finish After Current).",
   "order": 20,
   "sections": [
     {
       "id": "workflow",
-      "title": "Bulk Scraping Workflow",
+      "title": "Persistent Scrape Queue & Controls",
+      "owner": "BatchScraper",
+      "order": 10,
       "blocks": [
         {
           "type": "paragraph",
-          "text": "Select multiple videos on the Videos list page and choose Scrape All from the bulk action bar to launch the Batch Video Scraper modal."
+          "text": "Select multiple videos on the Videos list page and choose Scrape All from the bulk action bar to add them to the persistent Batch Video Scraper queue. You can minimize the modal and add more videos to the queue at any time."
         },
         {
           "type": "steps",
           "items": [
-            "Choose the target Video Scraper from the dropdown.",
-            "Configure how each metadata field (Title, Date, Details, Cover, Studio, Performers, Tags, URLs) should be blended.",
-            "Set the request concurrency (1–4) to balance speed against site rate limits.",
-            "Click Start Batch Scrape to monitor live per-video progress."
+            "Keep Auto-Match by Video URL selected (with an optional fallback scraper) to route heterogeneous batches automatically, or pick a specific Video Scraper.",
+            "Configure how each metadata field (Title, Date, Details, Code, Director, Cover, Studio, Performers, Tags, URLs) should be blended.",
+            "Click Start Scrape Queue to begin processing, or minimize the modal to a floating status pill while continuing to browse and add more videos.",
+            "Use Pause, Skip Current (or per-item Skip), and Finish After Current to control execution on the fly."
           ]
         }
       ]
@@ -27,12 +29,13 @@
     {
       "id": "blend-strategies",
       "title": "Metadata Blend Strategies",
+      "order": 20,
       "blocks": [
         {
           "type": "table",
           "columns": ["Strategy", "Behavior"],
           "rows": [
-            ["If Empty / If Missing", "Populates the field only when the video does not already have a value"],
+            ["If Empty / If Missing", "Populates the field only when the video does not already have a value (or when the title is still the raw filename)"],
             ["Overwrite / Replace", "Replaces existing values with the newly scraped metadata"],
             ["Merge (Collections)", "Appends new performers, tags, or URLs while keeping existing entries"],
             ["Skip", "Leaves the existing field untouched"]

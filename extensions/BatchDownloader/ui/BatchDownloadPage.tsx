@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "@cove/runtime/react";
+import { extensionFetch } from "@cove/runtime/api";
 import {
   Download,
   CheckCircle2,
@@ -13,11 +14,17 @@ import {
   Sparkles,
   RefreshCw,
   Sliders,
-  X,
-} from "lucide-react";
+  CopyCheck,
+  Play,
+  Pause,
+  SkipForward,
+  Flag,
+  Plus,
+} from "@cove/runtime/lucide-react";
 import {
   EntityReferenceMultiSelector,
   EntityReferenceSelector,
+  useDocumentTitle,
   type EntityReferenceOption,
 } from "@cove/runtime/components";
 
@@ -27,28 +34,85 @@ export interface ParsedUrlItem {
   id: string;
   rawUrl: string;
   normalizedUrl: string;
+  sourceUrl?: string;
   label?: string;
   downloaderId?: string;
   downloaderName?: string;
   detectedEntity?: string;
   targetEntity: "Video" | "Gallery" | "Image" | "Audio";
+  manualEntityOverride?: boolean;
   qualityOptions?: Array<{ id: string; label: string }>;
   selectedQualityId?: string;
   status: "pending" | "inspecting" | "matched" | "unsupported" | "error";
   statusMessage?: string;
   isDuplicate?: boolean;
+  duplicateReason?: string;
 }
 
-export interface BatchJobProgress {
-  jobId: string;
-  title: string;
-  status: "Pending" | "Running" | "Completed" | "Failed" | "Cancelled";
-  progress?: number;
-  message?: string;
+export interface PersistentQueueItem {
+  id: string;
+  url: string;
+  rawUrl: string;
+  sourceUrl?: string;
+  label: string;
+  downloaderId: string;
+  downloaderName?: string;
+  entity: "Video" | "Gallery" | "Image" | "Audio";
+  entityId?: number | null;
+  qualityId?: string | null;
+  status: "Pending" | "Running" | "Completed" | "Skipped" | "Failed";
+  progress: number;
+  statusMessage?: string;
+  importedEntityId?: number | null;
+  addedAt: string;
+  completedAt?: string | null;
+}
+
+export interface PersistentQueueState {
+  runnerStatus: "Idle" | "Running" | "Paused";
+  finishAfterCurrent: boolean;
+  activeJobId?: string | null;
+  totalCount: number;
+  pendingCount: number;
+  runningCount: number;
+  completedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  items: PersistentQueueItem[];
+  updatedAt?: string;
+}
+
+const LOCAL_CACHE_KEY = "cove.batchDownloader.queue.v1";
+
+const EMPTY_QUEUE: PersistentQueueState = {
+  runnerStatus: "Idle",
+  finishAfterCurrent: false,
+  totalCount: 0,
+  pendingCount: 0,
+  runningCount: 0,
+  completedCount: 0,
+  skippedCount: 0,
+  failedCount: 0,
+  items: [],
+};
+
+function loadCachedQueue(): PersistentQueueState {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_CACHE_KEY);
+    if (!raw) return EMPTY_QUEUE;
+    const parsed = JSON.parse(raw) as PersistentQueueState;
+    if (!parsed || !Array.isArray(parsed.items)) return EMPTY_QUEUE;
+    return parsed;
+  } catch {
+    return EMPTY_QUEUE;
+  }
 }
 
 export function BatchDownloadPage() {
+  useDocumentTitle("Paste & Download");
+
   const [inputText, setInputText] = useState("");
+  const [dismissedUrls, setDismissedUrls] = useState<Set<string>>(new Set());
   const [defaultEntity, setDefaultEntity] = useState<DownloadEntityType>("auto");
   const [autoApplyMetadata, setAutoApplyMetadata] = useState(true);
   const [allowDuplicates, setAllowDuplicates] = useState(false);
@@ -57,6 +121,7 @@ export function BatchDownloadPage() {
   // Metadata Tagging State
   const [selectedTags, setSelectedTags] = useState<EntityReferenceOption[]>([]);
   const [selectedStudioId, setSelectedStudioId] = useState<number | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [selectedPerformers, setSelectedPerformers] = useState<EntityReferenceOption[]>([]);
 
   // Generation options
@@ -66,17 +131,55 @@ export function BatchDownloadPage() {
   const [genPhashes, setGenPhashes] = useState(false);
   const [genMd5, setGenMd5] = useState(false);
 
-  // Items table
+  // Staging Items table (before adding to persistent queue)
   const [items, setItems] = useState<ParsedUrlItem[]>([]);
   const [isInspecting, setIsInspecting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Active Job status
-  const [activeJob, setActiveJob] = useState<BatchJobProgress | null>(null);
+  // Persistent Download Queue State
+  const [queueState, setQueueState] = useState<PersistentQueueState>(loadCachedQueue);
   const [submitSummary, setSubmitSummary] = useState<{
     queued: number;
-    issues: Array<{ kind: string; label: string; reason: string }>;
+    skipped: Array<{ url: string; reason: string }>;
   } | null>(null);
+
+  const applyQueueState = useCallback((next: PersistentQueueState) => {
+    setQueueState(next);
+    try {
+      window.localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(next));
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
+  const fetchQueueState = useCallback(async () => {
+    try {
+      const res = await extensionFetch("/api/ext/batch-downloader/queue");
+      if (!res.ok) return;
+      const data: PersistentQueueState = await res.json();
+      applyQueueState(data);
+    } catch {
+      // ignore transient fetch errors
+    }
+  }, [applyQueueState]);
+
+  // Initial load on mount
+  useEffect(() => {
+    void fetchQueueState();
+  }, [fetchQueueState]);
+
+  // Poll persistent queue while Running
+  useEffect(() => {
+    if (queueState.runnerStatus !== "Running" && queueState.runningCount === 0) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void fetchQueueState();
+    }, 1500);
+
+    return () => window.clearInterval(interval);
+  }, [fetchQueueState, queueState.runnerStatus, queueState.runningCount]);
 
   // Extract URLs from raw text
   const extractedUrls = useMemo(() => {
@@ -87,27 +190,33 @@ export function BatchDownloadPage() {
       .map((u) => u.replace(/[.,;:!?)\]}>]+$/, "").trim())
       .filter((u) => {
         try {
-          new URL(u);
-          return true;
+          const parsed = new URL(u);
+          return parsed.protocol === "http:" || parsed.protocol === "https:";
         } catch {
           return false;
         }
       });
-    return Array.from(new Set(cleaned));
-  }, [inputText]);
+    return Array.from(new Set(cleaned)).filter((u) => !dismissedUrls.has(u));
+  }, [inputText, dismissedUrls]);
 
-  // Sync extracted URLs to table items
+  // Sync extracted URLs to staging items without resurrecting dismissed rows or clobbering manual row overrides
   useEffect(() => {
     setItems((prevItems) => {
       const prevMap = new Map(prevItems.map((item) => [item.rawUrl, item]));
-      return extractedUrls.map((url, index) => {
+      return extractedUrls.map((url) => {
         const existing = prevMap.get(url);
         if (existing) {
-          const effectiveTarget = defaultEntity === "auto" ? (existing.detectedEntity as any) || "Video" : defaultEntity;
+          if (existing.manualEntityOverride) {
+            return existing;
+          }
+          const effectiveTarget =
+            defaultEntity === "auto"
+              ? ((existing.detectedEntity as ParsedUrlItem["targetEntity"]) || "Video")
+              : defaultEntity;
           return { ...existing, targetEntity: effectiveTarget };
         }
         return {
-          id: `${index}-${url}`,
+          id: url,
           rawUrl: url,
           normalizedUrl: url,
           targetEntity: defaultEntity === "auto" ? "Video" : defaultEntity,
@@ -117,23 +226,29 @@ export function BatchDownloadPage() {
     });
   }, [extractedUrls, defaultEntity]);
 
-  // Preflight inspection with bounded concurrency
+  // Preflight inspection with bounded concurrency + duplicate check
   const inspectUrls = async () => {
     if (items.length === 0) return;
     setIsInspecting(true);
 
-    const updated = items.map((item) => ({ ...item, status: "inspecting" as const }));
-    setItems(updated);
+    const snapshot = items.map((item) => ({ ...item, status: "inspecting" as const }));
+    setItems(snapshot);
 
-    const concurrency = Math.min(4, updated.length);
+    const concurrency = Math.min(4, snapshot.length);
     let cursor = 0;
 
+    const updateOne = (rawUrl: string, patch: Partial<ParsedUrlItem>) => {
+      setItems((prev) =>
+        prev.map((item) => (item.rawUrl === rawUrl ? { ...item, ...patch } : item))
+      );
+    };
+
     const worker = async () => {
-      while (cursor < updated.length) {
+      while (cursor < snapshot.length) {
         const index = cursor++;
-        const item = updated[index];
+        const item = snapshot[index];
         try {
-          const res = await fetch("/api/system/downloaders/match", {
+          const res = await extensionFetch("/api/system/downloaders/match", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: item.rawUrl }),
@@ -147,33 +262,60 @@ export function BatchDownloadPage() {
           if (Array.isArray(matches) && matches.length > 0) {
             const matched = matches[0];
             const detected = matched.supportedEntity || "Video";
-            updated[index] = {
-              ...item,
+            const normalizedUrl = matched.normalizedUrl || item.rawUrl;
+            const targetEntity = item.manualEntityOverride
+              ? item.targetEntity
+              : defaultEntity === "auto"
+              ? detected
+              : defaultEntity;
+
+            let isDuplicate = false;
+            let duplicateReason: string | undefined;
+            try {
+              const preflightRes = await extensionFetch("/api/system/downloaders/preflight", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  url: normalizedUrl,
+                  entity: targetEntity,
+                }),
+              });
+              if (preflightRes.ok) {
+                const preflight = await preflightRes.json();
+                isDuplicate = Boolean(preflight.isDuplicate);
+                duplicateReason = preflight.duplicateReason || undefined;
+              }
+            } catch {
+              // ignore preflight check failure
+            }
+
+            updateOne(item.rawUrl, {
               downloaderId: matched.downloaderId,
               downloaderName: matched.downloaderName,
               detectedEntity: detected,
-              normalizedUrl: matched.normalizedUrl || item.rawUrl,
+              normalizedUrl,
+              sourceUrl: matched.sourceUrl || undefined,
               label: matched.label || undefined,
               qualityOptions: matched.qualityOptions ?? [],
-              selectedQualityId: "", // Empty allows Cove 1.8+ MaxDownloadHeight to govern resolution
-              targetEntity: defaultEntity === "auto" ? detected : defaultEntity,
+              selectedQualityId: item.selectedQualityId ?? "",
+              targetEntity,
+              isDuplicate,
+              duplicateReason,
               status: "matched",
-            };
+              statusMessage: undefined,
+            });
           } else {
-            updated[index] = {
-              ...item,
+            updateOne(item.rawUrl, {
               status: "unsupported",
               statusMessage: "No downloader matched this URL",
-            };
+            });
           }
         } catch (err: any) {
-          updated[index] = {
-            ...item,
+          updateOne(item.rawUrl, {
             status: "error",
             statusMessage: err?.message || "Failed to inspect URL",
-          };
+          });
         }
-        setItems([...updated]);
       }
     };
 
@@ -181,103 +323,88 @@ export function BatchDownloadPage() {
     setIsInspecting(false);
   };
 
-  const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+  const removeItem = (rawUrl: string) => {
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      next.add(rawUrl);
+      return next;
+    });
+    setItems((prev) => prev.filter((item) => item.rawUrl !== rawUrl));
   };
 
-  // Submit batch download
-  const handleQueueBatch = async () => {
-    if (items.length === 0) return;
+  const removeUnsupported = () => {
+    const toRemove = items
+      .filter((i) => i.status === "unsupported" || i.status === "error")
+      .map((i) => i.rawUrl);
+    if (toRemove.length === 0) return;
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      for (const u of toRemove) next.add(u);
+      return next;
+    });
+    setItems((prev) => prev.filter((i) => i.status !== "unsupported" && i.status !== "error"));
+  };
+
+  const removeDuplicates = () => {
+    const toRemove = items.filter((i) => i.isDuplicate).map((i) => i.rawUrl);
+    if (toRemove.length === 0) return;
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      for (const u of toRemove) next.add(u);
+      return next;
+    });
+    setItems((prev) => prev.filter((i) => !i.isDuplicate));
+  };
+
+  const unsupportedCount = useMemo(
+    () => items.filter((i) => i.status === "unsupported" || i.status === "error").length,
+    [items]
+  );
+
+  const duplicateCount = useMemo(
+    () => items.filter((i) => i.isDuplicate).length,
+    [items]
+  );
+
+  // Add staged items to the persistent download queue
+  const handleAddToQueue = async (autoStart = true) => {
+    const eligibleItems = items.filter(
+      (item) =>
+        item.status !== "unsupported" &&
+        item.status !== "error" &&
+        (allowDuplicates || !item.isDuplicate)
+    );
+
+    if (eligibleItems.length === 0) return;
     setIsSubmitting(true);
     setSubmitSummary(null);
 
     try {
       const tagIds = selectedTags.map((t) => t.id);
       const performerIds = selectedPerformers.map((p) => p.id);
-      const studioId = selectedStudioId;
 
-      const hasCustomMetadata = tagIds.length > 0 || performerIds.length > 0 || studioId !== null;
-
-      const batchItems = new Array<Record<string, any>>(items.length);
-      const concurrency = Math.min(4, items.length);
-      let cursor = 0;
-
-      const createWorker = async () => {
-        while (cursor < items.length) {
-          const idx = cursor++;
-          const item = items[idx];
-          let entityId: number | undefined;
-
-          // If user specified custom tags, performers, or studio, create placeholder entity first
-          if (hasCustomMetadata) {
-            try {
-              const entityType = item.targetEntity.toLowerCase();
-              const payload: Record<string, any> = {
-                title: item.label || item.normalizedUrl,
-                urls: [item.normalizedUrl],
-                tagIds,
-                performerIds,
-                studioId: studioId ?? undefined,
-              };
-
-              const endpoint =
-                entityType === "video"
-                  ? "/api/videos"
-                  : entityType === "gallery"
-                  ? "/api/galleries"
-                  : entityType === "image"
-                  ? "/api/images"
-                  : "/api/audios";
-
-              const createRes = await fetch(endpoint, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
-              });
-
-              if (createRes.ok) {
-                const createdData = await createRes.json();
-                entityId = createdData.id;
-              }
-            } catch (e) {
-              console.error("Failed to pre-create entity with metadata, falling back to server placeholder", e);
-            }
-          }
-
-          batchItems[idx] = {
-            downloaderId: item.downloaderId,
-            url: item.normalizedUrl,
-            entity: item.targetEntity,
-            entityId: entityId ?? null,
-            qualityId: item.selectedQualityId || null,
-            label: item.label || item.rawUrl,
-            title: item.label || item.rawUrl,
-            createEntityIfMissing: entityId ? false : true,
-            autoApplyMetadata,
-          };
-        }
-      };
-
-      await Promise.all(Array.from({ length: concurrency }, () => createWorker()));
-
-      const res = await fetch("/api/system/downloaders/download-batch", {
+      const res = await extensionFetch("/api/ext/batch-downloader/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          items: batchItems,
-          followUp: {
-            scrapeVideos: autoApplyMetadata,
-            autoApplyMetadata,
-            allowDuplicateDownloads: allowDuplicates,
-            generate: {
-              thumbnails: genThumbnails,
-              previews: genPreviews,
-              sprites: genSprites,
-              phashes: genPhashes,
-              md5: genMd5,
-            },
-          },
-          preflightBeforeQueue: false,
+          items: eligibleItems.map((item) => ({
+            url: item.normalizedUrl,
+            rawUrl: item.rawUrl,
+            sourceUrl: item.sourceUrl || undefined,
+            label: item.label || item.rawUrl,
+            downloaderId: item.downloaderId || undefined,
+            downloaderName: item.downloaderName || undefined,
+            entity: item.manualEntityOverride ? item.targetEntity : defaultEntity === "auto" ? item.detectedEntity || "auto" : defaultEntity,
+            qualityId: item.selectedQualityId || null,
+          })),
+          entity: defaultEntity,
+          studioId: selectedStudioId,
+          groupId: selectedGroupId,
+          tagIds,
+          performerIds,
+          autoApplyMetadata,
+          allowDuplicates,
+          autoStart,
         }),
       });
 
@@ -287,51 +414,101 @@ export function BatchDownloadPage() {
       }
 
       const result = await res.json();
+      if (result.queue) {
+        applyQueueState(result.queue);
+      } else {
+        await fetchQueueState();
+      }
+
       setSubmitSummary({
-        queued: result.queuedCount,
-        issues: result.issues || [],
+        queued: result.queuedCount ?? 0,
+        skipped: result.skipped || [],
       });
 
-      if (result.jobId) {
-        setActiveJob({
-          jobId: result.jobId,
-          title: `Downloading ${result.queuedCount} items`,
-          status: "Running",
-          progress: 0,
-        });
+      // Clear staging area so user can add more URLs anytime
+      if ((result.queuedCount ?? 0) > 0) {
+        setInputText("");
+        setDismissedUrls(new Set());
+        setItems([]);
       }
     } catch (err: any) {
-      alert(`Error queueing batch: ${err.message}`);
+      alert(`Error adding to download queue: ${err.message}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Poll active background job
-  useEffect(() => {
-    if (!activeJob?.jobId || activeJob.status === "Completed" || activeJob.status === "Failed") {
-      return;
-    }
+  // Persistent Queue Control Handlers
+  const handlePauseQueue = async () => {
+    const res = await extensionFetch("/api/ext/batch-downloader/queue/pause", { method: "POST" });
+    if (res.ok) applyQueueState(await res.json());
+  };
 
-    const interval = setInterval(async () => {
-      try {
-        const r = await fetch(`/api/jobs/${activeJob.jobId}`);
-        if (!r.ok) return;
-        const j = await r.json();
-        setActiveJob({
-          jobId: j.id,
-          title: j.description ?? j.title ?? "Batch Download",
-          status: j.status,
-          progress: Math.round((j.progress || 0) * 100),
-          message: j.subTask ?? j.statusMessage,
-        });
-      } catch (err) {
-        console.error("Failed to poll job status", err);
-      }
-    }, 2000);
+  const handleResumeQueue = async () => {
+    const res = await extensionFetch("/api/ext/batch-downloader/queue/resume", { method: "POST" });
+    if (res.ok) applyQueueState(await res.json());
+  };
 
-    return () => clearInterval(interval);
-  }, [activeJob?.jobId, activeJob?.status]);
+  const handleToggleFinishAfterCurrent = async () => {
+    const res = await extensionFetch("/api/ext/batch-downloader/queue/finish-after-current", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !queueState.finishAfterCurrent }),
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleSkipCurrent = async () => {
+    const res = await extensionFetch("/api/ext/batch-downloader/queue/skip-current", {
+      method: "POST",
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleSkipItem = async (itemId: string) => {
+    const res = await extensionFetch(`/api/ext/batch-downloader/queue/skip/${encodeURIComponent(itemId)}`, {
+      method: "POST",
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleRetryItem = async (itemId: string) => {
+    const res = await extensionFetch(`/api/ext/batch-downloader/queue/retry/${encodeURIComponent(itemId)}`, {
+      method: "POST",
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleRetryAllFailed = async () => {
+    const res = await extensionFetch("/api/ext/batch-downloader/queue/retry-failed", {
+      method: "POST",
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleRemoveQueueItem = async (itemId: string) => {
+    const res = await extensionFetch(`/api/ext/batch-downloader/queue/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    });
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const handleClearQueue = async (onlyFinished: boolean) => {
+    const res = await extensionFetch(
+      `/api/ext/batch-downloader/queue/clear?onlyFinished=${onlyFinished}`,
+      { method: "POST" }
+    );
+    if (res.ok) applyQueueState(await res.json());
+  };
+
+  const processedQueueCount =
+    queueState.completedCount + queueState.skippedCount + queueState.failedCount;
+  const overallQueuePercent =
+    queueState.totalCount > 0
+      ? Math.round((processedQueueCount / queueState.totalCount) * 100)
+      : 0;
+  const isQueueRunning = queueState.runnerStatus === "Running";
+  const isQueuePaused = queueState.runnerStatus === "Paused";
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
@@ -343,77 +520,387 @@ export function BatchDownloadPage() {
             Paste & Download
           </h1>
           <p className="text-sm text-muted">
-            Paste media links from clipboard, inspect compatible Cove downloaders, apply metadata tags, and queue batch downloads.
+            Paste media links from clipboard, inspect compatible Cove downloaders, apply metadata tags, and manage your persistent download queue.
           </p>
         </div>
 
         {items.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
+              type="button"
               onClick={inspectUrls}
               disabled={isInspecting || isSubmitting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors disabled:opacity-50 cursor-pointer"
             >
               {isInspecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
               Inspect Downloaders
             </button>
+            {!isQueueRunning && !isQueuePaused && (
+              <button
+                type="button"
+                onClick={() => handleAddToQueue(false)}
+                disabled={isSubmitting || items.length === 0}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add to Queue (Paused)
+              </button>
+            )}
             <button
-              onClick={handleQueueBatch}
+              type="button"
+              onClick={() => handleAddToQueue(true)}
               disabled={isSubmitting || items.length === 0}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors disabled:opacity-50 shadow-sm"
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors disabled:opacity-50 shadow-sm cursor-pointer"
             >
-              {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              Queue {items.length} {items.length === 1 ? "Download" : "Downloads"}
+              {isSubmitting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : isQueueRunning || isQueuePaused ? (
+                <Plus className="w-3.5 h-3.5" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              {isQueueRunning || isQueuePaused
+                ? `Append ${items.length} to Queue`
+                : `Queue & Start (${items.length})`}
             </button>
           </div>
         )}
       </div>
 
-      {/* Active Job Tracker */}
-      {activeJob && (
-        <div className="rounded-xl border border-accent/30 bg-accent/5 p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-foreground flex items-center gap-2">
-              {activeJob.status === "Running" ? (
-                <Loader2 className="w-4 h-4 animate-spin text-accent" />
-              ) : activeJob.status === "Completed" ? (
-                <CheckCircle2 className="w-4 h-4 text-green-500" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-red-500" />
-              )}
-              Batch Job: {activeJob.title} ({activeJob.status})
-            </span>
-            <span className="text-xs font-semibold text-accent">{activeJob.progress ?? 0}%</span>
+      {/* Persistent Download Queue Panel */}
+      {queueState.totalCount > 0 && (
+        <div className="rounded-xl border border-border bg-card overflow-hidden space-y-0">
+          {/* Queue Control Header */}
+          <div className="p-4 border-b border-border bg-surface/40 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                {isQueueRunning ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-accent" />
+                ) : isQueuePaused ? (
+                  <Pause className="w-5 h-5 text-amber-400" />
+                ) : (
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                )}
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 id="persistent-download-queue-heading" className="text-sm font-bold text-foreground">
+                      Persistent Download Queue
+                    </h2>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/25 font-semibold">
+                      {processedQueueCount}/{queueState.totalCount} ({overallQueuePercent}%)
+                    </span>
+                    {isQueuePaused && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">
+                        Paused
+                      </span>
+                    )}
+                    {isQueueRunning && queueState.finishAfterCurrent && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-semibold">
+                        Finishing after current job...
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted">
+                    {isQueueRunning
+                      ? queueState.finishAfterCurrent
+                        ? "Completing active download, then pausing automatically"
+                        : `${queueState.runningCount} downloading • ${queueState.pendingCount} pending in queue`
+                      : isQueuePaused
+                      ? `Queue paused with ${queueState.pendingCount} pending item(s)`
+                      : queueState.pendingCount > 0
+                      ? `${queueState.pendingCount} pending item(s) ready to start`
+                      : "All queued items processed — paste more URLs below to add to queue"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Queue Action Controls: Pause/Resume, Skip, Finish After Current */}
+              <div className="flex flex-wrap items-center gap-2">
+                {isQueueRunning ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handlePauseQueue}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-amber-500/30 bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer"
+                      title="Pause queue immediately and return active download to Pending"
+                    >
+                      <Pause className="w-3.5 h-3.5" />
+                      Pause
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSkipCurrent}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors cursor-pointer"
+                      title="Skip the currently downloading item and move to the next item"
+                    >
+                      <SkipForward className="w-3.5 h-3.5" />
+                      Skip Current
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleToggleFinishAfterCurrent}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                        queueState.finishAfterCurrent
+                          ? "border-amber-500 bg-amber-500/20 text-amber-300"
+                          : "border-border bg-card hover:bg-surface text-muted hover:text-foreground"
+                      }`}
+                      title="Let the current download finish importing, then pause the queue automatically"
+                    >
+                      <Flag className="w-3.5 h-3.5" />
+                      {queueState.finishAfterCurrent ? "Finishing After Current ✓" : "Finish After Current"}
+                    </button>
+                  </>
+                ) : (
+                  queueState.pendingCount > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleResumeQueue}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-accent hover:bg-accent-hover text-white transition-colors cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        {isQueuePaused
+                          ? `Resume Queue (${queueState.pendingCount})`
+                          : `Start Queue (${queueState.pendingCount})`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSkipCurrent}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors cursor-pointer"
+                        title="Skip the next pending item in the queue"
+                      >
+                        <SkipForward className="w-3.5 h-3.5" />
+                        Skip Next
+                      </button>
+                    </>
+                  )
+                )}
+              </div>
+            </div>
+
+            {/* Overall Progress Bar */}
+            <div className="w-full bg-border rounded-full h-2 overflow-hidden">
+              <div
+                className="bg-accent h-2 transition-all duration-300"
+                style={{ width: `${overallQueuePercent}%` }}
+              />
+            </div>
+
+            {/* Summary Badges & Cleanup */}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="px-2 py-0.5 rounded bg-card border border-border text-foreground font-medium">
+                  {queueState.pendingCount} Pending
+                </span>
+                <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/25 text-emerald-400 font-medium">
+                  {queueState.completedCount} Completed
+                </span>
+                {queueState.skippedCount > 0 && (
+                  <span className="px-2 py-0.5 rounded bg-card border border-border text-muted font-medium">
+                    {queueState.skippedCount} Skipped
+                  </span>
+                )}
+                {queueState.failedCount > 0 && (
+                  <span className="px-2 py-0.5 rounded bg-red-500/15 border border-red-500/25 text-red-400 font-medium">
+                    {queueState.failedCount} Failed
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                {(queueState.failedCount > 0 || queueState.skippedCount > 0) && (
+                  <button
+                    type="button"
+                    onClick={handleRetryAllFailed}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-border bg-card hover:bg-surface text-foreground transition-colors cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Retry Failed / Skipped ({queueState.failedCount + queueState.skippedCount})
+                  </button>
+                )}
+                {processedQueueCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleClearQueue(true)}
+                    className="px-2.5 py-1 rounded-md border border-border bg-card hover:bg-surface text-muted hover:text-foreground transition-colors cursor-pointer"
+                  >
+                    Clear Finished ({processedQueueCount})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleClearQueue(false)}
+                  className="px-2.5 py-1 rounded-md border border-red-500/25 bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors cursor-pointer"
+                >
+                  Clear All
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="w-full bg-border rounded-full h-2 overflow-hidden">
-            <div
-              className="bg-accent h-2 transition-all duration-300"
-              style={{ width: `${activeJob.progress ?? 0}%` }}
-            />
-          </div>
+          {/* Persistent Queue Items Table */}
+          <div
+            tabIndex={0}
+            role="region"
+            aria-labelledby="persistent-download-queue-heading"
+            className="overflow-x-auto max-h-[380px] overflow-y-auto"
+          >
+            <table className="w-full text-left text-xs border-separate border-spacing-0">
+              <thead className="sticky top-0 z-10 bg-surface text-muted uppercase text-[10px] tracking-wider border-b border-border">
+                <tr>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Status</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Item / URL</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Downloader</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Entity</th>
+                  <th scope="col" className="py-2.5 px-3 text-right border-b border-border">Controls</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {queueState.items.map((qItem) => (
+                  <tr key={qItem.id} className="hover:bg-surface/30 transition-colors">
+                    {/* Status */}
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      {qItem.status === "Running" ? (
+                        <div className="space-y-1 min-w-[110px]">
+                          <span className="inline-flex items-center gap-1.5 text-accent font-semibold">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            {Math.round(qItem.progress)}%
+                          </span>
+                          <div className="w-full bg-border rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-accent h-1.5 transition-all duration-300"
+                              style={{ width: `${Math.min(100, Math.max(0, qItem.progress))}%` }}
+                            />
+                          </div>
+                        </div>
+                      ) : qItem.status === "Completed" ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 font-semibold">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Completed
+                        </span>
+                      ) : qItem.status === "Skipped" ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface text-muted border border-border font-medium">
+                          <SkipForward className="w-3 h-3" />
+                          Skipped
+                        </span>
+                      ) : qItem.status === "Failed" ? (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/25 font-semibold"
+                          title={qItem.statusMessage}
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                          Failed
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-surface text-muted border border-border">
+                          Pending
+                        </span>
+                      )}
+                    </td>
 
-          {activeJob.message && (
-            <p className="text-xs text-muted truncate">{activeJob.message}</p>
-          )}
+                    {/* Label & URL */}
+                    <td className="py-2.5 px-3 max-w-sm truncate">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-medium text-foreground truncate" title={qItem.label}>
+                          {qItem.label || qItem.url}
+                        </span>
+                        <a
+                          href={qItem.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-muted hover:text-accent flex-shrink-0"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                        </a>
+                      </div>
+                      {qItem.statusMessage && (
+                        <span className="text-[10px] text-muted truncate block" title={qItem.statusMessage}>
+                          {qItem.statusMessage}
+                        </span>
+                      )}
+                    </td>
+
+                    {/* Downloader */}
+                    <td className="py-2.5 px-3 whitespace-nowrap text-muted">
+                      {qItem.downloaderName || qItem.downloaderId}
+                    </td>
+
+                    {/* Entity */}
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      <span className="px-2 py-0.5 rounded bg-surface border border-border text-foreground text-[11px]">
+                        {qItem.entity}
+                        {qItem.importedEntityId ? ` #${qItem.importedEntityId}` : ""}
+                      </span>
+                    </td>
+
+                    {/* Controls */}
+                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        {(qItem.status === "Pending" || qItem.status === "Running") && (
+                          <button
+                            type="button"
+                            onClick={() => handleSkipItem(qItem.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border bg-card hover:bg-surface text-muted hover:text-foreground transition-colors cursor-pointer"
+                            title="Skip this download"
+                          >
+                            <SkipForward className="w-3 h-3" />
+                            Skip
+                          </button>
+                        )}
+                        {(qItem.status === "Failed" || qItem.status === "Skipped") && (
+                          <button
+                            type="button"
+                            onClick={() => handleRetryItem(qItem.id)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border bg-card hover:bg-surface text-foreground transition-colors cursor-pointer"
+                            title="Retry this download"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            Retry
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveQueueItem(qItem.id)}
+                          className="text-muted hover:text-red-500 transition-colors p-1 cursor-pointer"
+                          title="Remove from persistent queue"
+                          aria-label={`Remove ${qItem.label || qItem.url} from queue`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {/* Submission Feedback */}
       {submitSummary && (
         <div className="rounded-xl border border-border bg-card p-4 space-y-2">
-          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-            <CheckCircle2 className="w-4 h-4 text-green-500" />
-            Successfully queued {submitSummary.queued} download items.
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <CheckCircle2 className="w-4 h-4 text-green-500" />
+              Added {submitSummary.queued} {submitSummary.queued === 1 ? "item" : "items"} to the persistent download queue.
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubmitSummary(null)}
+              className="text-xs text-muted hover:text-foreground cursor-pointer"
+            >
+              Dismiss
+            </button>
           </div>
-          {submitSummary.issues.length > 0 && (
+          {submitSummary.skipped.length > 0 && (
             <div className="space-y-1 mt-2">
               <span className="text-xs font-semibold uppercase text-muted">Issues / Skipped:</span>
               <ul className="text-xs text-muted space-y-1">
-                {submitSummary.issues.map((issue, idx) => (
+                {submitSummary.skipped.map((issue, idx) => (
                   <li key={idx} className="flex items-center gap-1.5 text-amber-500">
                     <AlertTriangle className="w-3 h-3 flex-shrink-0" />
-                    <span>{issue.label}: {issue.reason}</span>
+                    <span>{issue.url}: {issue.reason}</span>
                   </li>
                 ))}
               </ul>
@@ -431,18 +918,22 @@ export function BatchDownloadPage() {
             <div className="flex items-center justify-between">
               <label className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <Layers className="w-4 h-4 text-accent" />
-                Paste URLs
+                Add URLs to Queue
               </label>
               <div className="flex items-center gap-2">
                 {items.length > 0 && (
                   <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
-                    {items.length} {items.length === 1 ? "URL" : "URLs"} found
+                    {items.length} {items.length === 1 ? "URL" : "URLs"} staged
                   </span>
                 )}
-                {inputText && (
+                {(inputText || dismissedUrls.size > 0) && (
                   <button
-                    onClick={() => setInputText("")}
-                    className="text-xs text-muted hover:text-foreground transition-colors"
+                    type="button"
+                    onClick={() => {
+                      setInputText("");
+                      setDismissedUrls(new Set());
+                    }}
+                    className="text-xs text-muted hover:text-foreground transition-colors cursor-pointer"
                   >
                     Clear
                   </button>
@@ -452,14 +943,17 @@ export function BatchDownloadPage() {
 
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Paste URLs here (one per line, comma-separated, or pasted from Markdown/chat logs)..."
+              onChange={(e) => {
+                setInputText(e.target.value);
+                setDismissedUrls(new Set());
+              }}
+              placeholder="Paste URLs here to stage and append to the persistent download queue (one per line, comma-separated, or pasted from Markdown/chat logs)..."
               rows={6}
-              className="w-full rounded-lg border border-border bg-background p-3 text-sm text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent font-mono text-xs"
+              className="w-full rounded-lg border border-border bg-background p-3 text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent font-mono text-xs"
             />
 
             <p className="text-[11px] text-muted">
-              Supports any direct stream, YouTube, JustTheGays, galleries, or hosts supported by installed Cove downloaders.
+              Supports any direct stream, YouTube, JustTheGays, galleries, or hosts supported by installed Cove downloaders. You can append new URLs even while the queue is running or paused.
             </p>
           </div>
 
@@ -470,10 +964,10 @@ export function BatchDownloadPage() {
                 <Tag className="w-4 h-4 text-accent" />
                 Initial Metadata Tagging
               </h2>
-              <span className="text-xs text-muted">Applied to all items in batch</span>
+              <span className="text-xs text-muted">Applied to staged items when added to queue</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* Studio */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-foreground">Studio</label>
@@ -482,6 +976,17 @@ export function BatchDownloadPage() {
                   value={selectedStudioId}
                   onChange={(val) => setSelectedStudioId(val)}
                   placeholder="Select studio..."
+                />
+              </div>
+
+              {/* Group / Collection */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Group / Series</label>
+                <EntityReferenceSelector
+                  entityType="group"
+                  value={selectedGroupId}
+                  onChange={(val) => setSelectedGroupId(val)}
+                  placeholder="Add to group..."
                 />
               </div>
 
@@ -569,7 +1074,7 @@ export function BatchDownloadPage() {
               <button
                 type="button"
                 onClick={() => setShowAdvancedGen(!showAdvancedGen)}
-                className="w-full flex items-center justify-between text-xs font-medium text-foreground hover:text-accent transition-colors"
+                className="w-full flex items-center justify-between text-xs font-medium text-foreground hover:text-accent transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-accent" />
@@ -632,27 +1137,52 @@ export function BatchDownloadPage() {
         </div>
       </div>
 
-      {/* URL Preflight Inspection Table */}
+      {/* Staged URL Preflight Inspection Table */}
       {items.length > 0 && (
         <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="p-4 border-b border-border flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+          <div className="p-4 border-b border-border flex flex-wrap items-center justify-between gap-2">
+            <h3 id="download-staging-heading" className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Film className="w-4 h-4 text-accent" />
-              Download Queue ({items.length})
+              Staged URLs to Add ({items.length})
             </h3>
-            <span className="text-xs text-muted">Review items before queueing</span>
+            <div className="flex items-center gap-2">
+              {unsupportedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={removeUnsupported}
+                  className="text-xs px-2.5 py-1 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors cursor-pointer"
+                >
+                  Remove Unsupported ({unsupportedCount})
+                </button>
+              )}
+              {duplicateCount > 0 && (
+                <button
+                  type="button"
+                  onClick={removeDuplicates}
+                  className="text-xs px-2.5 py-1 rounded-md border border-border bg-surface text-muted hover:text-foreground transition-colors cursor-pointer"
+                >
+                  Remove Duplicates ({duplicateCount})
+                </button>
+              )}
+              <span className="text-xs text-muted">Review staged items before adding to queue</span>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-surface/50 text-muted uppercase text-[10px] tracking-wider border-b border-border">
+          <div
+            tabIndex={0}
+            role="region"
+            aria-labelledby="download-staging-heading"
+            className="overflow-x-auto max-h-[420px] overflow-y-auto"
+          >
+            <table className="w-full text-left text-xs border-separate border-spacing-0">
+              <thead className="sticky top-0 z-10 bg-surface text-muted uppercase text-[10px] tracking-wider border-b border-border">
                 <tr>
-                  <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3">URL / Label</th>
-                  <th className="py-2.5 px-3">Downloader</th>
-                  <th className="py-2.5 px-3">Entity</th>
-                  <th className="py-2.5 px-3">Quality</th>
-                  <th className="py-2.5 px-3 text-right">Action</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Status</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">URL / Label</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Downloader</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Entity</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Quality</th>
+                  <th scope="col" className="py-2.5 px-3 text-right border-b border-border">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -663,11 +1193,26 @@ export function BatchDownloadPage() {
                       {item.status === "inspecting" ? (
                         <Loader2 className="w-4 h-4 animate-spin text-accent" />
                       ) : item.status === "matched" ? (
-                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-green-500" />
+                          {item.isDuplicate && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                              title={item.duplicateReason || "URL already downloaded in library"}
+                            >
+                              <CopyCheck className="w-3 h-3" />
+                              In Library
+                            </span>
+                          )}
+                        </div>
                       ) : item.status === "unsupported" ? (
-                        <AlertTriangle className="w-4 h-4 text-amber-500" />
+                        <span title={item.statusMessage}>
+                          <AlertTriangle className="w-4 h-4 text-amber-500" />
+                        </span>
                       ) : item.status === "error" ? (
-                        <AlertCircle className="w-4 h-4 text-red-500" />
+                        <span title={item.statusMessage}>
+                          <AlertCircle className="w-4 h-4 text-red-500" />
+                        </span>
                       ) : (
                         <span className="w-2 h-2 rounded-full bg-muted block" />
                       )}
@@ -705,9 +1250,13 @@ export function BatchDownloadPage() {
                       <select
                         value={item.targetEntity}
                         onChange={(e) => {
-                          const val = e.target.value as any;
+                          const val = e.target.value as ParsedUrlItem["targetEntity"];
                           setItems((prev) =>
-                            prev.map((i) => (i.id === item.id ? { ...i, targetEntity: val } : i))
+                            prev.map((i) =>
+                              i.rawUrl === item.rawUrl
+                                ? { ...i, targetEntity: val, manualEntityOverride: true }
+                                : i
+                            )
                           );
                         }}
                         className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none"
@@ -727,7 +1276,9 @@ export function BatchDownloadPage() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setItems((prev) =>
-                              prev.map((i) => (i.id === item.id ? { ...i, selectedQualityId: val } : i))
+                              prev.map((i) =>
+                                i.rawUrl === item.rawUrl ? { ...i, selectedQualityId: val } : i
+                              )
                             );
                           }}
                           className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none"
@@ -747,9 +1298,11 @@ export function BatchDownloadPage() {
                     {/* Action */}
                     <td className="py-2.5 px-3 text-right whitespace-nowrap">
                       <button
-                        onClick={() => removeItem(item.id)}
-                        className="text-muted hover:text-red-500 transition-colors p-1"
-                        title="Remove from batch"
+                        type="button"
+                        onClick={() => removeItem(item.rawUrl)}
+                        className="text-muted hover:text-red-500 transition-colors p-1 cursor-pointer"
+                        title="Remove from staged list"
+                        aria-label={`Remove ${item.label || item.rawUrl} from staged list`}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

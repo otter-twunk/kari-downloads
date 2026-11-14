@@ -1,8 +1,8 @@
 {
   "id": "karinauts.tools.batch-scraper",
   "name": "Batch Video Scraper",
-  "version": "0.1.2",
-  "description": "Batch scrape selected videos, choose scrapers, and customize field-level metadata blending (merge, overwrite, or keep existing).",
+  "version": "0.1.4",
+  "description": "Batch scrape selected videos with a persistent queue, auto-match or choose scrapers, customize field-level metadata blending, and pause, skip, or finish after the current job.",
   "author": "Karinauts",
   "url": "https://github.com/kari/kari-downloads",
   "categories": [

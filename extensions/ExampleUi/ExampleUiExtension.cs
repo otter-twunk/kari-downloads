@@ -4,13 +4,18 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ExampleUi;
 
-public sealed class ExampleUiExtension : CoveExtensionBase
+public sealed class ExampleUiExtension : CoveExtensionBase, IUIExtension
 {
     // Identity & metadata live in extension.json (the single source of truth); CoveExtensionBase surfaces them.
-    // CoveExtensionBase already implements IUIExtension; override GetUIManifest() to contribute UI pages,
-    // settings tabs, or settings panels.
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+    }
+
+    public override UIManifest GetUIManifest()
+    {
+        return ManifestBuilder()
+            .WithRuntimeVersion("v1")
+            .Build();
     }
 }
