@@ -603,9 +603,11 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             psi.ArgumentList.Add("-reconnect_delay_max");
             psi.ArgumentList.Add("5");
 
+            AddProbeArguments(psi.ArgumentList);
             psi.ArgumentList.Add("-i");
             psi.ArgumentList.Add(m3u8Url);
 
+            AddVideoMapArguments(psi.ArgumentList);
             psi.ArgumentList.Add("-c");
             psi.ArgumentList.Add("copy");
             psi.ArgumentList.Add("-bsf:a");
@@ -1098,6 +1100,25 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             .Url;
     }
 
+    // Some gff.network streams send their first H.264 SPS more than 5s in, past FFmpeg's default
+    // analyzeduration. FFmpeg then can't size the video, and "-c copy" silently drops it and writes audio only.
+    public static void AddProbeArguments(IList<string> args)
+    {
+        args.Add("-analyzeduration");
+        args.Add("30000000");
+        args.Add("-probesize");
+        args.Add("50000000");
+    }
+
+    // Require the video stream so an unreadable one fails the remux instead of producing an audio-only MP4.
+    public static void AddVideoMapArguments(IList<string> args)
+    {
+        args.Add("-map");
+        args.Add("0:v:0");
+        args.Add("-map");
+        args.Add("0:a?");
+    }
+
     private async Task<bool> TryRemuxTsToMp4Async(
         string inputTsPath,
         string outputMp4Path,
@@ -1126,8 +1147,10 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             process.StartInfo.ArgumentList.Add("-y");
             process.StartInfo.ArgumentList.Add("-loglevel");
             process.StartInfo.ArgumentList.Add("error");
+            AddProbeArguments(process.StartInfo.ArgumentList);
             process.StartInfo.ArgumentList.Add("-i");
             process.StartInfo.ArgumentList.Add(inputTsPath);
+            AddVideoMapArguments(process.StartInfo.ArgumentList);
             process.StartInfo.ArgumentList.Add("-c");
             process.StartInfo.ArgumentList.Add("copy");
             process.StartInfo.ArgumentList.Add("-bsf:a");
