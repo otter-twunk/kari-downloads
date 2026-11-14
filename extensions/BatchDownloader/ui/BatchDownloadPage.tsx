@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "@cove/runtime/react";
+import { extensionFetch } from "@cove/runtime/api";
 import {
   Download,
   CheckCircle2,
@@ -13,11 +14,12 @@ import {
   Sparkles,
   RefreshCw,
   Sliders,
-  X,
-} from "lucide-react";
+  CopyCheck,
+} from "@cove/runtime/lucide-react";
 import {
   EntityReferenceMultiSelector,
   EntityReferenceSelector,
+  useDocumentTitle,
   type EntityReferenceOption,
 } from "@cove/runtime/components";
 
@@ -27,16 +29,19 @@ export interface ParsedUrlItem {
   id: string;
   rawUrl: string;
   normalizedUrl: string;
+  sourceUrl?: string;
   label?: string;
   downloaderId?: string;
   downloaderName?: string;
   detectedEntity?: string;
   targetEntity: "Video" | "Gallery" | "Image" | "Audio";
+  manualEntityOverride?: boolean;
   qualityOptions?: Array<{ id: string; label: string }>;
   selectedQualityId?: string;
   status: "pending" | "inspecting" | "matched" | "unsupported" | "error";
   statusMessage?: string;
   isDuplicate?: boolean;
+  duplicateReason?: string;
 }
 
 export interface BatchJobProgress {
@@ -48,7 +53,10 @@ export interface BatchJobProgress {
 }
 
 export function BatchDownloadPage() {
+  useDocumentTitle("Paste & Download");
+
   const [inputText, setInputText] = useState("");
+  const [dismissedUrls, setDismissedUrls] = useState<Set<string>>(new Set());
   const [defaultEntity, setDefaultEntity] = useState<DownloadEntityType>("auto");
   const [autoApplyMetadata, setAutoApplyMetadata] = useState(true);
   const [allowDuplicates, setAllowDuplicates] = useState(false);
@@ -57,6 +65,7 @@ export function BatchDownloadPage() {
   // Metadata Tagging State
   const [selectedTags, setSelectedTags] = useState<EntityReferenceOption[]>([]);
   const [selectedStudioId, setSelectedStudioId] = useState<number | null>(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   const [selectedPerformers, setSelectedPerformers] = useState<EntityReferenceOption[]>([]);
 
   // Generation options
@@ -87,27 +96,33 @@ export function BatchDownloadPage() {
       .map((u) => u.replace(/[.,;:!?)\]}>]+$/, "").trim())
       .filter((u) => {
         try {
-          new URL(u);
-          return true;
+          const parsed = new URL(u);
+          return parsed.protocol === "http:" || parsed.protocol === "https:";
         } catch {
           return false;
         }
       });
-    return Array.from(new Set(cleaned));
-  }, [inputText]);
+    return Array.from(new Set(cleaned)).filter((u) => !dismissedUrls.has(u));
+  }, [inputText, dismissedUrls]);
 
-  // Sync extracted URLs to table items
+  // Sync extracted URLs to table items without resurrecting dismissed rows or clobbering manual row overrides
   useEffect(() => {
     setItems((prevItems) => {
       const prevMap = new Map(prevItems.map((item) => [item.rawUrl, item]));
-      return extractedUrls.map((url, index) => {
+      return extractedUrls.map((url) => {
         const existing = prevMap.get(url);
         if (existing) {
-          const effectiveTarget = defaultEntity === "auto" ? (existing.detectedEntity as any) || "Video" : defaultEntity;
+          if (existing.manualEntityOverride) {
+            return existing;
+          }
+          const effectiveTarget =
+            defaultEntity === "auto"
+              ? ((existing.detectedEntity as ParsedUrlItem["targetEntity"]) || "Video")
+              : defaultEntity;
           return { ...existing, targetEntity: effectiveTarget };
         }
         return {
-          id: `${index}-${url}`,
+          id: url,
           rawUrl: url,
           normalizedUrl: url,
           targetEntity: defaultEntity === "auto" ? "Video" : defaultEntity,
@@ -117,23 +132,29 @@ export function BatchDownloadPage() {
     });
   }, [extractedUrls, defaultEntity]);
 
-  // Preflight inspection with bounded concurrency
+  // Preflight inspection with bounded concurrency + duplicate check
   const inspectUrls = async () => {
     if (items.length === 0) return;
     setIsInspecting(true);
 
-    const updated = items.map((item) => ({ ...item, status: "inspecting" as const }));
-    setItems(updated);
+    const snapshot = items.map((item) => ({ ...item, status: "inspecting" as const }));
+    setItems(snapshot);
 
-    const concurrency = Math.min(4, updated.length);
+    const concurrency = Math.min(4, snapshot.length);
     let cursor = 0;
 
+    const updateOne = (rawUrl: string, patch: Partial<ParsedUrlItem>) => {
+      setItems((prev) =>
+        prev.map((item) => (item.rawUrl === rawUrl ? { ...item, ...patch } : item))
+      );
+    };
+
     const worker = async () => {
-      while (cursor < updated.length) {
+      while (cursor < snapshot.length) {
         const index = cursor++;
-        const item = updated[index];
+        const item = snapshot[index];
         try {
-          const res = await fetch("/api/system/downloaders/match", {
+          const res = await extensionFetch("/api/system/downloaders/match", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url: item.rawUrl }),
@@ -147,33 +168,60 @@ export function BatchDownloadPage() {
           if (Array.isArray(matches) && matches.length > 0) {
             const matched = matches[0];
             const detected = matched.supportedEntity || "Video";
-            updated[index] = {
-              ...item,
+            const normalizedUrl = matched.normalizedUrl || item.rawUrl;
+            const targetEntity = item.manualEntityOverride
+              ? item.targetEntity
+              : defaultEntity === "auto"
+              ? detected
+              : defaultEntity;
+
+            let isDuplicate = false;
+            let duplicateReason: string | undefined;
+            try {
+              const preflightRes = await extensionFetch("/api/system/downloaders/preflight", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  url: normalizedUrl,
+                  entity: targetEntity,
+                }),
+              });
+              if (preflightRes.ok) {
+                const preflight = await preflightRes.json();
+                isDuplicate = Boolean(preflight.isDuplicate);
+                duplicateReason = preflight.duplicateReason || undefined;
+              }
+            } catch {
+              // ignore preflight check failure
+            }
+
+            updateOne(item.rawUrl, {
               downloaderId: matched.downloaderId,
               downloaderName: matched.downloaderName,
               detectedEntity: detected,
-              normalizedUrl: matched.normalizedUrl || item.rawUrl,
+              normalizedUrl,
+              sourceUrl: matched.sourceUrl || undefined,
               label: matched.label || undefined,
               qualityOptions: matched.qualityOptions ?? [],
-              selectedQualityId: "", // Empty allows Cove 1.8+ MaxDownloadHeight to govern resolution
-              targetEntity: defaultEntity === "auto" ? detected : defaultEntity,
+              selectedQualityId: item.selectedQualityId ?? "",
+              targetEntity,
+              isDuplicate,
+              duplicateReason,
               status: "matched",
-            };
+              statusMessage: undefined,
+            });
           } else {
-            updated[index] = {
-              ...item,
+            updateOne(item.rawUrl, {
               status: "unsupported",
               statusMessage: "No downloader matched this URL",
-            };
+            });
           }
         } catch (err: any) {
-          updated[index] = {
-            ...item,
+          updateOne(item.rawUrl, {
             status: "error",
             statusMessage: err?.message || "Failed to inspect URL",
-          };
+          });
         }
-        setItems([...updated]);
       }
     };
 
@@ -181,13 +229,59 @@ export function BatchDownloadPage() {
     setIsInspecting(false);
   };
 
-  const removeItem = (id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+  const removeItem = (rawUrl: string) => {
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      next.add(rawUrl);
+      return next;
+    });
+    setItems((prev) => prev.filter((item) => item.rawUrl !== rawUrl));
   };
+
+  const removeUnsupported = () => {
+    const toRemove = items
+      .filter((i) => i.status === "unsupported" || i.status === "error")
+      .map((i) => i.rawUrl);
+    if (toRemove.length === 0) return;
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      for (const u of toRemove) next.add(u);
+      return next;
+    });
+    setItems((prev) => prev.filter((i) => i.status !== "unsupported" && i.status !== "error"));
+  };
+
+  const removeDuplicates = () => {
+    const toRemove = items.filter((i) => i.isDuplicate).map((i) => i.rawUrl);
+    if (toRemove.length === 0) return;
+    setDismissedUrls((prev) => {
+      const next = new Set(prev);
+      for (const u of toRemove) next.add(u);
+      return next;
+    });
+    setItems((prev) => prev.filter((i) => !i.isDuplicate));
+  };
+
+  const unsupportedCount = useMemo(
+    () => items.filter((i) => i.status === "unsupported" || i.status === "error").length,
+    [items]
+  );
+
+  const duplicateCount = useMemo(
+    () => items.filter((i) => i.isDuplicate).length,
+    [items]
+  );
 
   // Submit batch download
   const handleQueueBatch = async () => {
-    if (items.length === 0) return;
+    const eligibleItems = items.filter(
+      (item) =>
+        item.status !== "unsupported" &&
+        item.status !== "error" &&
+        (allowDuplicates || !item.isDuplicate)
+    );
+
+    if (eligibleItems.length === 0) return;
     setIsSubmitting(true);
     setSubmitSummary(null);
 
@@ -195,20 +289,21 @@ export function BatchDownloadPage() {
       const tagIds = selectedTags.map((t) => t.id);
       const performerIds = selectedPerformers.map((p) => p.id);
       const studioId = selectedStudioId;
+      const groupId = selectedGroupId;
 
       const hasCustomMetadata = tagIds.length > 0 || performerIds.length > 0 || studioId !== null;
 
-      const batchItems = new Array<Record<string, any>>(items.length);
-      const concurrency = Math.min(4, items.length);
+      const batchItems = new Array<Record<string, any>>(eligibleItems.length);
+      const concurrency = Math.min(4, eligibleItems.length);
       let cursor = 0;
 
       const createWorker = async () => {
-        while (cursor < items.length) {
+        while (cursor < eligibleItems.length) {
           const idx = cursor++;
-          const item = items[idx];
+          const item = eligibleItems[idx];
           let entityId: number | undefined;
 
-          // If user specified custom tags, performers, or studio, create placeholder entity first
+          // Pre-create placeholder entity only for eligible items when custom tags, performers, or studio are set
           if (hasCustomMetadata) {
             try {
               const entityType = item.targetEntity.toLowerCase();
@@ -218,6 +313,10 @@ export function BatchDownloadPage() {
                 tagIds,
                 performerIds,
                 studioId: studioId ?? undefined,
+                groups:
+                  entityType === "video" && groupId !== null
+                    ? [{ groupId, videoIndex: idx }]
+                    : undefined,
               };
 
               const endpoint =
@@ -229,7 +328,7 @@ export function BatchDownloadPage() {
                   ? "/api/images"
                   : "/api/audios";
 
-              const createRes = await fetch(endpoint, {
+              const createRes = await extensionFetch(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(payload),
@@ -247,6 +346,7 @@ export function BatchDownloadPage() {
           batchItems[idx] = {
             downloaderId: item.downloaderId,
             url: item.normalizedUrl,
+            sourceUrl: item.sourceUrl || undefined,
             entity: item.targetEntity,
             entityId: entityId ?? null,
             qualityId: item.selectedQualityId || null,
@@ -254,13 +354,17 @@ export function BatchDownloadPage() {
             title: item.label || item.rawUrl,
             createEntityIfMissing: entityId ? false : true,
             autoApplyMetadata,
+            groupIds:
+              item.targetEntity === "Video" && groupId !== null
+                ? [{ groupId, videoIndex: idx }]
+                : undefined,
           };
         }
       };
 
       await Promise.all(Array.from({ length: concurrency }, () => createWorker()));
 
-      const res = await fetch("/api/system/downloaders/download-batch", {
+      const res = await extensionFetch("/api/system/downloaders/download-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -277,7 +381,7 @@ export function BatchDownloadPage() {
               md5: genMd5,
             },
           },
-          preflightBeforeQueue: false,
+          preflightBeforeQueue: true,
         }),
       });
 
@@ -307,15 +411,20 @@ export function BatchDownloadPage() {
     }
   };
 
-  // Poll active background job
+  // Poll active background job (stop on Completed, Failed, or Cancelled)
   useEffect(() => {
-    if (!activeJob?.jobId || activeJob.status === "Completed" || activeJob.status === "Failed") {
+    if (
+      !activeJob?.jobId ||
+      activeJob.status === "Completed" ||
+      activeJob.status === "Failed" ||
+      activeJob.status === "Cancelled"
+    ) {
       return;
     }
 
     const interval = setInterval(async () => {
       try {
-        const r = await fetch(`/api/jobs/${activeJob.jobId}`);
+        const r = await extensionFetch(`/api/jobs/${activeJob.jobId}`);
         if (!r.ok) return;
         const j = await r.json();
         setActiveJob({
@@ -352,7 +461,7 @@ export function BatchDownloadPage() {
             <button
               onClick={inspectUrls}
               disabled={isInspecting || isSubmitting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-border bg-card hover:bg-surface text-foreground transition-colors disabled:opacity-50 cursor-pointer"
             >
               {isInspecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
               Inspect Downloaders
@@ -360,7 +469,7 @@ export function BatchDownloadPage() {
             <button
               onClick={handleQueueBatch}
               disabled={isSubmitting || items.length === 0}
-              className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors disabled:opacity-50 shadow-sm"
+              className="inline-flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-lg bg-accent text-white hover:bg-accent-hover transition-colors disabled:opacity-50 shadow-sm cursor-pointer"
             >
               {isSubmitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
               Queue {items.length} {items.length === 1 ? "Download" : "Downloads"}
@@ -374,7 +483,7 @@ export function BatchDownloadPage() {
         <div className="rounded-xl border border-accent/30 bg-accent/5 p-4 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-foreground flex items-center gap-2">
-              {activeJob.status === "Running" ? (
+              {activeJob.status === "Running" || activeJob.status === "Pending" ? (
                 <Loader2 className="w-4 h-4 animate-spin text-accent" />
               ) : activeJob.status === "Completed" ? (
                 <CheckCircle2 className="w-4 h-4 text-green-500" />
@@ -436,13 +545,16 @@ export function BatchDownloadPage() {
               <div className="flex items-center gap-2">
                 {items.length > 0 && (
                   <span className="text-xs px-2 py-0.5 rounded-full bg-accent/10 text-accent font-medium">
-                    {items.length} {items.length === 1 ? "URL" : "URLs"} found
+                    {items.length} {items.length === 1 ? "URL" : "URLs"} active
                   </span>
                 )}
-                {inputText && (
+                {(inputText || dismissedUrls.size > 0) && (
                   <button
-                    onClick={() => setInputText("")}
-                    className="text-xs text-muted hover:text-foreground transition-colors"
+                    onClick={() => {
+                      setInputText("");
+                      setDismissedUrls(new Set());
+                    }}
+                    className="text-xs text-muted hover:text-foreground transition-colors cursor-pointer"
                   >
                     Clear
                   </button>
@@ -452,10 +564,13 @@ export function BatchDownloadPage() {
 
             <textarea
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => {
+                setInputText(e.target.value);
+                setDismissedUrls(new Set());
+              }}
               placeholder="Paste URLs here (one per line, comma-separated, or pasted from Markdown/chat logs)..."
               rows={6}
-              className="w-full rounded-lg border border-border bg-background p-3 text-sm text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent font-mono text-xs"
+              className="w-full rounded-lg border border-border bg-background p-3 text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent font-mono text-xs"
             />
 
             <p className="text-[11px] text-muted">
@@ -473,7 +588,7 @@ export function BatchDownloadPage() {
               <span className="text-xs text-muted">Applied to all items in batch</span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               {/* Studio */}
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-foreground">Studio</label>
@@ -482,6 +597,17 @@ export function BatchDownloadPage() {
                   value={selectedStudioId}
                   onChange={(val) => setSelectedStudioId(val)}
                   placeholder="Select studio..."
+                />
+              </div>
+
+              {/* Group / Collection */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-foreground">Group / Series</label>
+                <EntityReferenceSelector
+                  entityType="group"
+                  value={selectedGroupId}
+                  onChange={(val) => setSelectedGroupId(val)}
+                  placeholder="Add to group..."
                 />
               </div>
 
@@ -569,7 +695,7 @@ export function BatchDownloadPage() {
               <button
                 type="button"
                 onClick={() => setShowAdvancedGen(!showAdvancedGen)}
-                className="w-full flex items-center justify-between text-xs font-medium text-foreground hover:text-accent transition-colors"
+                className="w-full flex items-center justify-between text-xs font-medium text-foreground hover:text-accent transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-accent" />
@@ -635,24 +761,49 @@ export function BatchDownloadPage() {
       {/* URL Preflight Inspection Table */}
       {items.length > 0 && (
         <div className="rounded-xl border border-border bg-card overflow-hidden">
-          <div className="p-4 border-b border-border flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+          <div className="p-4 border-b border-border flex flex-wrap items-center justify-between gap-2">
+            <h3 id="download-queue-heading" className="text-sm font-semibold text-foreground flex items-center gap-2">
               <Film className="w-4 h-4 text-accent" />
               Download Queue ({items.length})
             </h3>
-            <span className="text-xs text-muted">Review items before queueing</span>
+            <div className="flex items-center gap-2">
+              {unsupportedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={removeUnsupported}
+                  className="text-xs px-2.5 py-1 rounded-md border border-amber-500/30 bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors cursor-pointer"
+                >
+                  Remove Unsupported ({unsupportedCount})
+                </button>
+              )}
+              {duplicateCount > 0 && (
+                <button
+                  type="button"
+                  onClick={removeDuplicates}
+                  className="text-xs px-2.5 py-1 rounded-md border border-border bg-surface text-muted hover:text-foreground transition-colors cursor-pointer"
+                >
+                  Remove Duplicates ({duplicateCount})
+                </button>
+              )}
+              <span className="text-xs text-muted">Review items before queueing</span>
+            </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-surface/50 text-muted uppercase text-[10px] tracking-wider border-b border-border">
+          <div
+            tabIndex={0}
+            role="region"
+            aria-labelledby="download-queue-heading"
+            className="overflow-x-auto max-h-[480px] overflow-y-auto"
+          >
+            <table className="w-full text-left text-xs border-separate border-spacing-0">
+              <thead className="sticky top-0 z-10 bg-surface text-muted uppercase text-[10px] tracking-wider border-b border-border">
                 <tr>
-                  <th className="py-2.5 px-3">Status</th>
-                  <th className="py-2.5 px-3">URL / Label</th>
-                  <th className="py-2.5 px-3">Downloader</th>
-                  <th className="py-2.5 px-3">Entity</th>
-                  <th className="py-2.5 px-3">Quality</th>
-                  <th className="py-2.5 px-3 text-right">Action</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Status</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">URL / Label</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Downloader</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Entity</th>
+                  <th scope="col" className="py-2.5 px-3 border-b border-border">Quality</th>
+                  <th scope="col" className="py-2.5 px-3 text-right border-b border-border">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -663,11 +814,26 @@ export function BatchDownloadPage() {
                       {item.status === "inspecting" ? (
                         <Loader2 className="w-4 h-4 animate-spin text-accent" />
                       ) : item.status === "matched" ? (
-                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4 text-green-500" />
+                          {item.isDuplicate && (
+                            <span
+                              className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                              title={item.duplicateReason || "URL already downloaded in library"}
+                            >
+                              <CopyCheck className="w-3 h-3" />
+                              In Library
+                            </span>
+                          )}
+                        </div>
                       ) : item.status === "unsupported" ? (
-                        <AlertTriangle className="w-4 h-4 text-amber-500" />
+                        <span title={item.statusMessage}>
+                          <AlertTriangle className="w-4 h-4 text-amber-500" />
+                        </span>
                       ) : item.status === "error" ? (
-                        <AlertCircle className="w-4 h-4 text-red-500" />
+                        <span title={item.statusMessage}>
+                          <AlertCircle className="w-4 h-4 text-red-500" />
+                        </span>
                       ) : (
                         <span className="w-2 h-2 rounded-full bg-muted block" />
                       )}
@@ -705,9 +871,13 @@ export function BatchDownloadPage() {
                       <select
                         value={item.targetEntity}
                         onChange={(e) => {
-                          const val = e.target.value as any;
+                          const val = e.target.value as ParsedUrlItem["targetEntity"];
                           setItems((prev) =>
-                            prev.map((i) => (i.id === item.id ? { ...i, targetEntity: val } : i))
+                            prev.map((i) =>
+                              i.rawUrl === item.rawUrl
+                                ? { ...i, targetEntity: val, manualEntityOverride: true }
+                                : i
+                            )
                           );
                         }}
                         className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none"
@@ -727,7 +897,9 @@ export function BatchDownloadPage() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setItems((prev) =>
-                              prev.map((i) => (i.id === item.id ? { ...i, selectedQualityId: val } : i))
+                              prev.map((i) =>
+                                i.rawUrl === item.rawUrl ? { ...i, selectedQualityId: val } : i
+                              )
                             );
                           }}
                           className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground focus:outline-none"
@@ -747,9 +919,10 @@ export function BatchDownloadPage() {
                     {/* Action */}
                     <td className="py-2.5 px-3 text-right whitespace-nowrap">
                       <button
-                        onClick={() => removeItem(item.id)}
-                        className="text-muted hover:text-red-500 transition-colors p-1"
+                        onClick={() => removeItem(item.rawUrl)}
+                        className="text-muted hover:text-red-500 transition-colors p-1 cursor-pointer"
                         title="Remove from batch"
+                        aria-label={`Remove ${item.label || item.rawUrl} from batch`}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

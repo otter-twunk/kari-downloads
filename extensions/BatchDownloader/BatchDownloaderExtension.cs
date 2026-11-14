@@ -59,7 +59,9 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                         downloaderName = best?.DownloaderName,
                         supportedEntity = best?.SupportedEntity,
                         normalizedUrl = best?.NormalizedUrl ?? url,
-                        label = best?.Label ?? url
+                        label = best?.Label ?? url,
+                        sourceUrl = best?.SourceUrl,
+                        qualityOptions = best?.QualityOptions
                     };
                 }
                 finally
@@ -80,7 +82,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
         endpoints.MapPost("/api/ext/batch-downloader/queue", async (
             BatchQueueApiRequest request,
             IDownloaderService downloaderService,
-            IServiceScopeFactory scopeFactory,
+            IExtensionServiceScopeFactory scopeFactory,
             IJobService jobService,
             IVideoRepository videoRepo,
             IGalleryRepository galleryRepo,
@@ -94,13 +96,37 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 return Results.BadRequest(new { error = "No valid URLs provided in request." });
             }
 
+            // Match all URLs concurrently with bounded parallelism while preserving input order
+            var matchedByIndex = new Cove.Core.DTOs.DownloaderMatchDto?[urls.Count];
+            using (var matchSemaphore = new SemaphoreSlim(4, 4))
+            {
+                var matchTasks = urls.Select(async (url, index) =>
+                {
+                    await matchSemaphore.WaitAsync(ct);
+                    try
+                    {
+                        var matches = await downloaderService.MatchUrlAsync(url, ct);
+                        matchedByIndex[index] = matches.FirstOrDefault();
+                    }
+                    finally
+                    {
+                        matchSemaphore.Release();
+                    }
+                });
+                await Task.WhenAll(matchTasks);
+            }
+
             var queuedItems = new List<QueuedItem>();
             var skippedItems = new List<object>();
 
-            foreach (var url in urls)
+            var hasMetadata = (request.TagIds != null && request.TagIds.Count > 0)
+                || request.StudioId.HasValue
+                || (request.PerformerIds != null && request.PerformerIds.Count > 0);
+
+            for (var idx = 0; idx < urls.Count; idx++)
             {
-                var matches = await downloaderService.MatchUrlAsync(url, ct);
-                var match = matches.FirstOrDefault();
+                var url = urls[idx];
+                var match = matchedByIndex[idx];
                 if (match == null)
                 {
                     skippedItems.Add(new { url, reason = "No compatible downloader matched this URL." });
@@ -120,10 +146,6 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 var label = string.IsNullOrWhiteSpace(match.Label) ? url : match.Label;
 
                 int? entityId = null;
-                var hasMetadata = (request.TagIds != null && request.TagIds.Count > 0)
-                    || request.StudioId.HasValue
-                    || (request.PerformerIds != null && request.PerformerIds.Count > 0);
-
                 if (hasMetadata)
                 {
                     try
@@ -147,13 +169,15 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     }
                 }
 
+                var qualityId = string.IsNullOrWhiteSpace(request.QualityId) ? null : request.QualityId.Trim();
+
                 queuedItems.Add(new QueuedItem(
                     match.DownloaderId,
                     effectiveUrl,
                     entityType,
                     entityId,
                     label,
-                    null, // null allows Cove 1.8+ MaxDownloadHeight to govern stream resolution
+                    qualityId, // null allows Cove 1.8+ MaxDownloadHeight to govern stream resolution
                     match.SourceUrl));
             }
 
@@ -174,30 +198,45 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 $"Downloading {queuedItems.Count} item{(queuedItems.Count == 1 ? "" : "s")}",
                 async (progress, jobCt) =>
                 {
-                    await using var scope = scopeFactory.CreateAsyncScope();
-                    var scopedDownloader = scope.ServiceProvider.GetRequiredService<IDownloaderService>();
-
-                    for (var i = 0; i < queuedItems.Count; i++)
-                    {
-                        if (jobCt.IsCancellationRequested) break;
-                        var item = queuedItems[i];
-                        progress.Report((double)i / queuedItems.Count, $"Downloading ({i + 1}/{queuedItems.Count}): {item.Label}");
-                        try
+                    progress.DeclareUnitCount(queuedItems.Count);
+                    var batchResult = await jobService.RunBatchAsync(
+                        queuedItems,
+                        maxInFlight: 2,
+                        async (item, unit, unitCt) =>
                         {
-                            await scopedDownloader.DownloadAndImportAsync(
-                                new DownloaderImportRequest(item.DownloaderId, item.Url, item.Entity, item.EntityId, item.QualityId, item.SourceUrl)
+                            await using var scope = scopeFactory.CreateAsyncScope();
+                            var scopedDownloader = scope.ServiceProvider.GetRequiredService<IDownloaderService>();
+                            unit.Report(0.0, $"Downloading {item.Label}");
+
+                            var result = await scopedDownloader.DownloadAndImportAsync(
+                                new DownloaderImportRequest(
+                                    item.DownloaderId,
+                                    item.Url,
+                                    item.Entity,
+                                    item.EntityId,
+                                    item.QualityId,
+                                    item.SourceUrl)
                                 {
                                     AllowDuplicateDownload = allowDuplicates
                                 },
-                                progress,
-                                jobCt);
-                        }
-                        catch
-                        {
-                            // continue with remaining items
-                        }
-                    }
-                    progress.Report(1.0, $"Finished downloading {queuedItems.Count} items");
+                                progress: null,
+                                unitCt);
+
+                            if (result == null)
+                            {
+                                unit.Complete(JobUnitOutcome.Skipped, "Downloader returned no result.");
+                            }
+                            else
+                            {
+                                unit.Complete(JobUnitOutcome.Succeeded, $"Imported {item.Label}");
+                            }
+                        },
+                        progress,
+                        unitIdFactory: (item, i) => $"{i}:{item.Url}",
+                        labelFactory: item => item.Label,
+                        ct: jobCt);
+
+                    progress.SetSummary(batchResult.Summary);
                 },
                 exclusive: false);
 
@@ -213,7 +252,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
         .AllowWithoutCovePermission()
         .WithTags("Batch Downloader")
         .WithSummary("Queue a batch of URLs for background download and import")
-        .WithDescription("Matches URLs, optionally pre-creates tagged library entities, and enqueues a background download-batch job respecting Cove MaxDownloadHeight.");
+        .WithDescription("Matches URLs concurrently, optionally pre-creates tagged library entities, and enqueues a background download-batch job respecting Cove MaxDownloadHeight.");
     }
 
     public static List<string> ExtractUrls(string? rawText, IEnumerable<string>? urls)
@@ -252,7 +291,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
             : string.Empty;
     }
 
-    private static async Task<int?> CreateEntityWithMetadataAsync(
+    public static async Task<int?> CreateEntityWithMetadataAsync(
         DownloaderEntity entity,
         string url,
         string title,
@@ -265,6 +304,9 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
         IAudioRepository audioRepo,
         CancellationToken ct)
     {
+        var distinctTags = tagIds?.Where(id => id > 0).Distinct().ToArray() ?? [];
+        var distinctPerformers = performerIds?.Where(id => id > 0).Distinct().ToArray() ?? [];
+
         switch (entity)
         {
             case DownloaderEntity.Video:
@@ -275,19 +317,13 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     Organized = false,
                     Urls = [new VideoUrl { Url = url }],
                     StudioId = studioId,
-                    TagIds = tagIds?.ToArray() ?? [],
-                    PerformerIds = performerIds?.ToArray() ?? []
+                    TagIds = distinctTags,
+                    PerformerIds = distinctPerformers
                 };
-                if (tagIds != null)
-                {
-                    foreach (var tid in tagIds)
-                        video.VideoTags.Add(new VideoTag { TagId = tid });
-                }
-                if (performerIds != null)
-                {
-                    foreach (var pid in performerIds)
-                        video.VideoPerformers.Add(new VideoPerformer { PerformerId = pid });
-                }
+                foreach (var tid in distinctTags)
+                    video.VideoTags.Add(new VideoTag { TagId = tid });
+                foreach (var pid in distinctPerformers)
+                    video.VideoPerformers.Add(new VideoPerformer { PerformerId = pid });
                 var created = await videoRepo.AddAsync(video, ct);
                 return created.Id;
             }
@@ -298,8 +334,16 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     Title = title,
                     Organized = false,
                     Urls = [new GalleryUrl { Url = url }],
-                    StudioId = studioId
+                    StudioId = studioId,
+                    TagIds = distinctTags,
+                    PerformerIds = distinctPerformers,
+                    TagCount = distinctTags.Length,
+                    PerformerCount = distinctPerformers.Length
                 };
+                foreach (var tid in distinctTags)
+                    gallery.GalleryTags.Add(new GalleryTag { TagId = tid });
+                foreach (var pid in distinctPerformers)
+                    gallery.GalleryPerformers.Add(new GalleryPerformer { PerformerId = pid });
                 var created = await galleryRepo.AddAsync(gallery, ct);
                 return created.Id;
             }
@@ -310,8 +354,16 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     Title = title,
                     Organized = false,
                     Urls = [new ImageUrl { Url = url }],
-                    StudioId = studioId
+                    StudioId = studioId,
+                    TagIds = distinctTags,
+                    PerformerIds = distinctPerformers,
+                    TagCount = distinctTags.Length,
+                    PerformerCount = distinctPerformers.Length
                 };
+                foreach (var tid in distinctTags)
+                    image.ImageTags.Add(new ImageTag { TagId = tid });
+                foreach (var pid in distinctPerformers)
+                    image.ImagePerformers.Add(new ImagePerformer { PerformerId = pid });
                 var created = await imageRepo.AddAsync(image, ct);
                 return created.Id;
             }
@@ -322,8 +374,14 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                     Title = title,
                     Organized = false,
                     Urls = [new AudioUrl { Url = url }],
-                    StudioId = studioId
+                    StudioId = studioId,
+                    TagIds = distinctTags,
+                    PerformerIds = distinctPerformers
                 };
+                foreach (var tid in distinctTags)
+                    audio.AudioTags.Add(new AudioTag { TagId = tid });
+                foreach (var pid in distinctPerformers)
+                    audio.AudioPerformers.Add(new AudioPerformer { PerformerId = pid });
                 var created = await audioRepo.AddAsync(audio, ct);
                 return created.Id;
             }
@@ -347,6 +405,7 @@ public sealed class BatchQueueApiRequest
     public string? RawText { get; set; }
     public List<string>? Urls { get; set; }
     public string? Entity { get; set; }
+    public string? QualityId { get; set; }
     public List<int>? TagIds { get; set; }
     public int? StudioId { get; set; }
     public List<int>? PerformerIds { get; set; }

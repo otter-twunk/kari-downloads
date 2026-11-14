@@ -50,8 +50,15 @@ public sealed class ExtensionUpdaterExtension : CoveExtensionBase, IUIExtension,
             if (string.IsNullOrWhiteSpace(entry.Url))
                 return Results.BadRequest(new { message = "Source URL or GitHub owner/repo is required." });
 
-            var saved = await _service.UpsertSourceAsync(entry, ct);
-            return Results.Ok(saved);
+            try
+            {
+                var saved = await _service.UpsertSourceAsync(entry, ct);
+                return Results.Ok(saved);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.BadRequest(new { message = ex.Message });
+            }
         }).RequireCovePermission("extensions.install");
 
         group.MapDelete("/sources/{sourceId}", async (string sourceId, CancellationToken ct) =>

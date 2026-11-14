@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "@cove/runtime/react";
+import { extensionFetch } from "@cove/runtime/api";
+import { useDocumentTitle } from "@cove/runtime/components";
 import {
   RefreshCw,
   Download,
@@ -12,9 +14,12 @@ import {
   GitBranch,
   FileJson,
   RotateCcw,
+  Search,
 } from "@cove/runtime/lucide-react";
 
 type SourceKind = "manifest-feed" | "static-zip" | "github-release";
+type StatusFilter = "all" | "updates" | "installed" | "available";
+type CategoryFilter = "all" | "downloaders" | "scrapers" | "tools";
 
 interface ExtensionSource {
   id: string;
@@ -34,6 +39,8 @@ interface DiscoveredItem {
   extensionId?: string | null;
   name: string;
   remoteVersion?: string | null;
+  minCoveVersion?: string | null;
+  categories?: string[] | null;
   description?: string | null;
   downloadUrl: string;
   updatedAt?: string | null;
@@ -46,20 +53,54 @@ interface InstalledExtension {
   version: string;
 }
 
-function compareSemver(a?: string | null, b?: string | null): number {
+/**
+ * Compares two SemVer strings including pre-release suffixes (e.g. 1.0.0 > 1.0.0-alpha.1).
+ */
+export function compareSemver(a?: string | null, b?: string | null): number {
   if (!a || !b) return 0;
-  const pa = a.replace(/^v/i, "").split(/[-+]/)[0].split(".").map((n) => parseInt(n, 10) || 0);
-  const pb = b.replace(/^v/i, "").split(/[-+]/)[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const cleanA = a.trim().replace(/^v/i, "").split("+")[0];
+  const cleanB = b.trim().replace(/^v/i, "").split("+")[0];
+
+  const [coreA, preA] = cleanA.split("-", 2);
+  const [coreB, preB] = cleanB.split("-", 2);
+
+  const pa = coreA.split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = coreB.split(".").map((n) => parseInt(n, 10) || 0);
   const len = Math.max(pa.length, pb.length, 3);
   for (let i = 0; i < len; i++) {
     const va = pa[i] ?? 0;
     const vb = pb[i] ?? 0;
     if (va !== vb) return va > vb ? 1 : -1;
   }
-  return 0;
+
+  // Stable release is higher precedence than pre-release of the same core version
+  if (!preA && preB) return 1;
+  if (preA && !preB) return -1;
+  if (!preA && !preB) return 0;
+
+  return preA!.localeCompare(preB!, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function getItemKey(item: DiscoveredItem, idx?: number): string {
+  return `${item.sourceId}:${item.extensionId || item.downloadUrl || idx || ""}`;
+}
+
+function inferItemCategory(item: DiscoveredItem): "downloaders" | "scrapers" | "tools" {
+  const id = (item.extensionId ?? "").toLowerCase();
+  const name = item.name.toLowerCase();
+  const cats = (item.categories ?? []).map((c) => c.toLowerCase());
+  if (id.includes(".downloaders.") || cats.includes("downloader") || (name.includes("downloader") && !id.includes(".tools."))) {
+    return "downloaders";
+  }
+  if (id.includes(".scrapers.") || cats.includes("scraper") || (name.includes("scraper") && !id.includes(".tools."))) {
+    return "scrapers";
+  }
+  return "tools";
 }
 
 export function ExtensionUpdaterPage() {
+  useDocumentTitle("Extension Updater");
+
   const [sources, setSources] = useState<ExtensionSource[]>([]);
   const [discovered, setDiscovered] = useState<DiscoveredItem[]>([]);
   const [installedMap, setInstalledMap] = useState<Record<string, InstalledExtension>>({});
@@ -67,9 +108,14 @@ export function ExtensionUpdaterPage() {
 
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
-  const [updatingUrl, setUpdatingUrl] = useState<string | null>(null);
+  const [updatingKey, setUpdatingKey] = useState<string | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
   const [statusLog, setStatusLog] = useState<Record<string, { ok: boolean; message: string }>>({});
+
+  // Search & Filter state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
 
   // Add source form state
   const [showAddForm, setShowAddForm] = useState(false);
@@ -81,7 +127,7 @@ export function ExtensionUpdaterPage() {
   const [savingSource, setSavingSource] = useState(false);
 
   async function loadInstalled() {
-    const res = await fetch("/api/extensions");
+    const res = await extensionFetch("/api/extensions");
     if (!res.ok) return;
     const data = await res.json();
     const list: InstalledExtension[] = Array.isArray(data) ? data : data.extensions ?? [];
@@ -93,7 +139,7 @@ export function ExtensionUpdaterPage() {
   }
 
   async function loadSources() {
-    const res = await fetch("/api/ext/extension-updater/sources");
+    const res = await extensionFetch("/api/ext/extension-updater/sources");
     if (res.ok) {
       setSources(await res.json());
     }
@@ -104,7 +150,7 @@ export function ExtensionUpdaterPage() {
     setCheckErrors([]);
     try {
       await loadInstalled();
-      const res = await fetch("/api/ext/extension-updater/check?inspectStaticZips=true", {
+      const res = await extensionFetch("/api/ext/extension-updater/check?inspectStaticZips=true", {
         method: "POST",
       });
       if (!res.ok) {
@@ -129,13 +175,15 @@ export function ExtensionUpdaterPage() {
   }, []);
 
   const enrichedItems = useMemo(() => {
-    return discovered.map((item) => {
+    return discovered.map((item, idx) => {
+      const key = getItemKey(item, idx);
       const installed = item.extensionId ? installedMap[item.extensionId.toLowerCase()] : undefined;
       const hasUpdate =
         !!installed && !!item.remoteVersion && compareSemver(item.remoteVersion, installed.version) > 0;
       const isUpToDate =
         !!installed && !!item.remoteVersion && compareSemver(item.remoteVersion, installed.version) <= 0;
-      return { item, installed, hasUpdate, isUpToDate };
+      const category = inferItemCategory(item);
+      return { key, item, installed, hasUpdate, isUpToDate, category };
     });
   }, [discovered, installedMap]);
 
@@ -144,10 +192,25 @@ export function ExtensionUpdaterPage() {
     [enrichedItems]
   );
 
-  async function installFromUrl(item: DiscoveredItem) {
-    setUpdatingUrl(item.downloadUrl);
+  const filteredItems = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return enrichedItems.filter(({ item, installed, hasUpdate, category }) => {
+      if (statusFilter === "updates" && !hasUpdate) return false;
+      if (statusFilter === "installed" && !installed) return false;
+      if (statusFilter === "available" && installed) return false;
+      if (categoryFilter !== "all" && category !== categoryFilter) return false;
+      if (q) {
+        const hay = `${item.name} ${item.extensionId ?? ""} ${item.description ?? ""} ${item.sourceLabel}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [enrichedItems, statusFilter, categoryFilter, searchQuery]);
+
+  async function installFromUrl(item: DiscoveredItem, itemKey: string, options?: { skipRefresh?: boolean }) {
+    setUpdatingKey(itemKey);
     try {
-      const res = await fetch("/api/extensions/install-from-url", {
+      const res = await extensionFetch("/api/extensions/install-from-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: item.downloadUrl, trustUnverified: true }),
@@ -156,24 +219,26 @@ export function ExtensionUpdaterPage() {
       if (!res.ok) {
         setStatusLog((prev) => ({
           ...prev,
-          [item.downloadUrl]: { ok: false, message: body.message || `HTTP ${res.status}` },
+          [itemKey]: { ok: false, message: body.message || `HTTP ${res.status}` },
         }));
         return false;
       }
       setStatusLog((prev) => ({
         ...prev,
-        [item.downloadUrl]: { ok: true, message: body.message || "Installed" },
+        [itemKey]: { ok: true, message: body.message || "Installed" },
       }));
-      await loadInstalled();
+      if (!options?.skipRefresh) {
+        await loadInstalled();
+      }
       return true;
     } catch (err: any) {
       setStatusLog((prev) => ({
         ...prev,
-        [item.downloadUrl]: { ok: false, message: err?.message || "Install failed" },
+        [itemKey]: { ok: false, message: err?.message || "Install failed" },
       }));
       return false;
     } finally {
-      setUpdatingUrl(null);
+      setUpdatingKey(null);
     }
   }
 
@@ -188,8 +253,9 @@ export function ExtensionUpdaterPage() {
         return aSelf - bSelf;
       });
       for (const entry of ordered) {
-        await installFromUrl(entry.item);
+        await installFromUrl(entry.item, entry.key, { skipRefresh: true });
       }
+      await loadInstalled();
     } finally {
       setBatchRunning(false);
     }
@@ -200,7 +266,7 @@ export function ExtensionUpdaterPage() {
     if (!newUrl.trim()) return;
     setSavingSource(true);
     try {
-      const res = await fetch("/api/ext/extension-updater/sources", {
+      const res = await extensionFetch("/api/ext/extension-updater/sources", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -220,14 +286,32 @@ export function ExtensionUpdaterPage() {
         setShowAddForm(false);
         await loadSources();
         await checkUpdates();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setCheckErrors([err.message || `Failed to save source (HTTP ${res.status})`]);
       }
     } finally {
       setSavingSource(false);
     }
   }
 
+  async function handleToggleSourceEnabled(src: ExtensionSource) {
+    const res = await extensionFetch("/api/ext/extension-updater/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...src,
+        enabled: !src.enabled,
+      }),
+    });
+    if (res.ok) {
+      await loadSources();
+      await checkUpdates();
+    }
+  }
+
   async function handleDeleteSource(id: string) {
-    const res = await fetch(`/api/ext/extension-updater/sources/${encodeURIComponent(id)}`, {
+    const res = await extensionFetch(`/api/ext/extension-updater/sources/${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
     if (res.ok) {
@@ -237,7 +321,7 @@ export function ExtensionUpdaterPage() {
   }
 
   async function handleResetDefaults() {
-    const res = await fetch("/api/ext/extension-updater/sources/reset-defaults", { method: "POST" });
+    const res = await extensionFetch("/api/ext/extension-updater/sources/reset-defaults", { method: "POST" });
     if (res.ok) {
       await loadSources();
       await checkUpdates();
@@ -448,7 +532,10 @@ export function ExtensionUpdaterPage() {
 
         <div className="divide-y" style={{ borderColor: "var(--border-subtle)" }}>
           {sources.map((src) => (
-            <div key={src.id} className="py-2.5 flex items-center justify-between gap-3">
+            <div
+              key={src.id}
+              className={`py-2.5 flex items-center justify-between gap-3 ${!src.enabled ? "opacity-50" : ""}`}
+            >
               <div className="flex items-center gap-2.5 min-w-0">
                 {src.kind === "github-release" ? (
                   <GitBranch className="w-4 h-4 shrink-0" style={{ color: "var(--text-secondary)" }} />
@@ -465,13 +552,29 @@ export function ExtensionUpdaterPage() {
                   </div>
                 </div>
               </div>
-              <button
-                onClick={() => handleDeleteSource(src.id)}
-                title="Remove source"
-                className="p-1.5 rounded hover:bg-red-500/15 text-red-400 cursor-pointer"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleToggleSourceEnabled(src)}
+                  className="px-2 py-1 rounded text-xs border cursor-pointer"
+                  style={{
+                    background: src.enabled ? "var(--bg-elevated)" : "transparent",
+                    borderColor: "var(--border-subtle)",
+                  }}
+                  title={src.enabled ? "Disable source" : "Enable source"}
+                >
+                  {src.enabled ? "Enabled" : "Disabled"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteSource(src.id)}
+                  title="Remove source"
+                  aria-label={`Remove ${src.label}`}
+                  className="p-1.5 rounded hover:bg-red-500/15 text-red-400 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -482,10 +585,68 @@ export function ExtensionUpdaterPage() {
         className="rounded-xl border overflow-hidden"
         style={{ background: "var(--bg-surface)", borderColor: "var(--border-subtle)" }}
       >
-        <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "var(--border-subtle)" }}>
-          <h2 className="font-semibold text-sm uppercase tracking-wider" style={{ color: "var(--text-secondary)" }}>
-            Available & Installed Extensions ({enrichedItems.length})
-          </h2>
+        {/* Filter & Search Toolbar */}
+        <div
+          className="px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3"
+          style={{ borderColor: "var(--border-subtle)" }}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold text-sm uppercase tracking-wider mr-2" style={{ color: "var(--text-secondary)" }}>
+              Extensions ({filteredItems.length}/{enrichedItems.length})
+            </h2>
+
+            {(
+              [
+                { id: "all", label: "All" },
+                { id: "updates", label: `Updates (${outdatedItems.length})` },
+                { id: "installed", label: "Installed" },
+                { id: "available", label: "Not Installed" },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setStatusFilter(tab.id)}
+                className="px-2.5 py-1 rounded-md text-xs font-medium cursor-pointer border"
+                style={
+                  statusFilter === tab.id
+                    ? { background: "var(--color-primary)", color: "#fff", borderColor: "transparent" }
+                    : { background: "var(--bg-elevated)", borderColor: "var(--border-subtle)" }
+                }
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value as CategoryFilter)}
+              className="px-2.5 py-1.5 rounded-lg border text-xs"
+              style={{ background: "var(--bg-elevated)", borderColor: "var(--border-subtle)" }}
+            >
+              <option value="all">All Categories</option>
+              <option value="downloaders">Downloaders</option>
+              <option value="scrapers">Scrapers</option>
+              <option value="tools">Tools & UI</option>
+            </select>
+
+            <div className="relative">
+              <Search
+                className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2"
+                style={{ color: "var(--text-secondary)" }}
+              />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter extensions..."
+                className="pl-8 pr-3 py-1.5 rounded-lg border text-xs w-48"
+                style={{ background: "var(--bg-elevated)", borderColor: "var(--border-subtle)" }}
+              />
+            </div>
+          </div>
         </div>
 
         {loading || (checking && enrichedItems.length === 0) ? (
@@ -493,17 +654,19 @@ export function ExtensionUpdaterPage() {
             <Loader2 className="w-4 h-4 animate-spin" />
             Checking sources...
           </div>
-        ) : enrichedItems.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <div className="p-8 text-center text-sm" style={{ color: "var(--text-secondary)" }}>
-            No extensions discovered yet. Add a source or publish a release to populate the feed.
+            {enrichedItems.length === 0
+              ? "No extensions discovered yet. Add a source or publish a release to populate the feed."
+              : "No extensions match your current filter."}
           </div>
         ) : (
           <div className="divide-y" style={{ borderColor: "var(--border-subtle)" }}>
-            {enrichedItems.map(({ item, installed, hasUpdate, isUpToDate }, idx) => {
-              const log = statusLog[item.downloadUrl];
-              const isInstalling = updatingUrl === item.downloadUrl;
+            {filteredItems.map(({ key, item, installed, hasUpdate, isUpToDate, category }) => {
+              const log = statusLog[key];
+              const isInstalling = updatingKey === key;
               return (
-                <div key={`${item.sourceId}-${item.extensionId || idx}`} className="p-4 flex flex-wrap items-center justify-between gap-4">
+                <div key={key} className="p-4 flex flex-wrap items-center justify-between gap-4">
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-sm">{item.name}</span>
@@ -512,6 +675,12 @@ export function ExtensionUpdaterPage() {
                           {item.extensionId}
                         </code>
                       )}
+                      <span
+                        className="text-[11px] px-2 py-0.5 rounded capitalize"
+                        style={{ background: "var(--bg-elevated)", color: "var(--text-secondary)" }}
+                      >
+                        {category === "tools" ? "Tool / UI" : category.slice(0, -1)}
+                      </span>
                       {hasUpdate && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 font-medium">
                           Update: {installed?.version} → {item.remoteVersion}
@@ -526,6 +695,11 @@ export function ExtensionUpdaterPage() {
                       {!installed && item.remoteVersion && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400">
                           Available: v{item.remoteVersion}
+                        </span>
+                      )}
+                      {item.minCoveVersion && (
+                        <span className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                          Cove {item.minCoveVersion}+
                         </span>
                       )}
                     </div>
@@ -549,7 +723,7 @@ export function ExtensionUpdaterPage() {
 
                   <div>
                     <button
-                      onClick={() => installFromUrl(item)}
+                      onClick={() => installFromUrl(item, key)}
                       disabled={isInstalling || batchRunning || !item.downloadUrl}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 cursor-pointer disabled:opacity-50 border"
                       style={

@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -27,6 +29,8 @@ public sealed record DiscoveredExtensionItem
     public string? ExtensionId { get; init; }
     public string Name { get; init; } = string.Empty;
     public string? RemoteVersion { get; init; }
+    public string? MinCoveVersion { get; init; }
+    public IReadOnlyList<string>? Categories { get; init; }
     public string? Description { get; init; }
     public string DownloadUrl { get; init; } = string.Empty;
     public string? UpdatedAt { get; init; }
@@ -45,6 +49,10 @@ public sealed class ExtensionUpdaterService
     private const string StoreKey = "sources.v1";
     private const long MaxZipInspectBytes = 64 * 1024 * 1024;
 
+    private static readonly Regex GitHubRepoSlugRegex = new(
+        @"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -54,8 +62,15 @@ public sealed class ExtensionUpdaterService
     };
 
     private readonly HttpClient _http;
+    private readonly SemaphoreSlim _storeLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, CachedZipEntry> _zipCache = new(StringComparer.OrdinalIgnoreCase);
     private IExtensionStore? _store;
     private List<ExtensionSourceEntry>? _memoryFallback;
+
+    private sealed record CachedZipEntry(
+        string? ETag,
+        DateTimeOffset? LastModified,
+        DiscoveredExtensionItem Item);
 
     public ExtensionUpdaterService(HttpClient? httpClient = null)
     {
@@ -67,7 +82,7 @@ public sealed class ExtensionUpdaterService
     private static HttpClient CreateDefaultHttpClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CoveExtensionUpdater", "0.1.0"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CoveExtensionUpdater", "0.1.2"));
         return client;
     }
 
@@ -85,6 +100,19 @@ public sealed class ExtensionUpdaterService
 
     public async Task<List<ExtensionSourceEntry>> GetSourcesAsync(CancellationToken ct = default)
     {
+        await _storeLock.WaitAsync(ct);
+        try
+        {
+            return await GetSourcesUnlockedAsync(ct);
+        }
+        finally
+        {
+            _storeLock.Release();
+        }
+    }
+
+    private async Task<List<ExtensionSourceEntry>> GetSourcesUnlockedAsync(CancellationToken ct)
+    {
         if (_store != null)
         {
             var raw = await _store.GetAsync(StoreKey, ct);
@@ -96,7 +124,7 @@ public sealed class ExtensionUpdaterService
             }
 
             var defaults = GetDefaultSources().ToList();
-            await SaveSourcesAsync(defaults, ct);
+            await SaveSourcesUnlockedAsync(defaults, ct);
             return defaults;
         }
 
@@ -105,6 +133,19 @@ public sealed class ExtensionUpdaterService
     }
 
     public async Task SaveSourcesAsync(List<ExtensionSourceEntry> sources, CancellationToken ct = default)
+    {
+        await _storeLock.WaitAsync(ct);
+        try
+        {
+            await SaveSourcesUnlockedAsync(sources, ct);
+        }
+        finally
+        {
+            _storeLock.Release();
+        }
+    }
+
+    private async Task SaveSourcesUnlockedAsync(List<ExtensionSourceEntry> sources, CancellationToken ct)
     {
         if (_store != null)
         {
@@ -118,77 +159,141 @@ public sealed class ExtensionUpdaterService
 
     public async Task<ExtensionSourceEntry> UpsertSourceAsync(ExtensionSourceEntry input, CancellationToken ct = default)
     {
-        var sources = await GetSourcesAsync(ct);
+        var kind = NormalizeKind(input.Kind);
+        var rawUrl = input.Url?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(rawUrl))
+            throw new ArgumentException("Source URL or GitHub owner/repo is required.");
+
+        if (kind == "github-release")
+        {
+            var repoSlug = NormalizeGitHubRepo(rawUrl);
+            if (!GitHubRepoSlugRegex.IsMatch(repoSlug) || repoSlug.Contains("..", StringComparison.Ordinal))
+                throw new ArgumentException($"Invalid GitHub repository '{rawUrl}'. Expected 'owner/repo' or a GitHub repo URL.");
+        }
+        else
+        {
+            if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                throw new ArgumentException($"Invalid URL '{rawUrl}'. Must be an absolute http:// or https:// URL.");
+            }
+        }
+
         var normalized = input with
         {
             Id = string.IsNullOrWhiteSpace(input.Id) ? Guid.NewGuid().ToString("N")[..12] : input.Id.Trim(),
-            Kind = NormalizeKind(input.Kind),
-            Label = string.IsNullOrWhiteSpace(input.Label) ? input.Url.Trim() : input.Label.Trim(),
-            Url = input.Url.Trim(),
+            Kind = kind,
+            Label = string.IsNullOrWhiteSpace(input.Label) ? rawUrl : input.Label.Trim(),
+            Url = rawUrl,
             TagPrefix = string.IsNullOrWhiteSpace(input.TagPrefix) ? null : input.TagPrefix.Trim(),
             AssetPattern = string.IsNullOrWhiteSpace(input.AssetPattern) ? null : input.AssetPattern.Trim(),
             ExtensionId = string.IsNullOrWhiteSpace(input.ExtensionId) ? null : input.ExtensionId.Trim(),
         };
 
-        var idx = sources.FindIndex(s => string.Equals(s.Id, normalized.Id, StringComparison.OrdinalIgnoreCase));
-        if (idx >= 0)
-            sources[idx] = normalized;
-        else
-            sources.Add(normalized);
+        await _storeLock.WaitAsync(ct);
+        try
+        {
+            var sources = await GetSourcesUnlockedAsync(ct);
+            var idx = sources.FindIndex(s => string.Equals(s.Id, normalized.Id, StringComparison.OrdinalIgnoreCase));
+            if (idx >= 0)
+                sources[idx] = normalized;
+            else
+                sources.Add(normalized);
 
-        await SaveSourcesAsync(sources, ct);
-        return normalized;
+            await SaveSourcesUnlockedAsync(sources, ct);
+            return normalized;
+        }
+        finally
+        {
+            _storeLock.Release();
+        }
     }
 
     public async Task<bool> DeleteSourceAsync(string sourceId, CancellationToken ct = default)
     {
-        var sources = await GetSourcesAsync(ct);
-        var removed = sources.RemoveAll(s => string.Equals(s.Id, sourceId, StringComparison.OrdinalIgnoreCase));
-        if (removed == 0) return false;
-        await SaveSourcesAsync(sources, ct);
-        return true;
+        await _storeLock.WaitAsync(ct);
+        try
+        {
+            var sources = await GetSourcesUnlockedAsync(ct);
+            var removed = sources.RemoveAll(s => string.Equals(s.Id, sourceId, StringComparison.OrdinalIgnoreCase));
+            if (removed == 0) return false;
+            await SaveSourcesUnlockedAsync(sources, ct);
+            return true;
+        }
+        finally
+        {
+            _storeLock.Release();
+        }
     }
 
     public async Task<CheckSourcesResult> CheckSourcesAsync(bool inspectStaticZips = true, CancellationToken ct = default)
     {
         var sources = (await GetSourcesAsync(ct)).Where(s => s.Enabled).ToList();
-        var items = new List<DiscoveredExtensionItem>();
-        var errors = new List<string>();
+        if (sources.Count == 0)
+            return new CheckSourcesResult([], []);
 
-        foreach (var source in sources)
+        var itemsBySource = new List<DiscoveredExtensionItem>[sources.Count];
+        var errorsBySource = new string?[sources.Count];
+        using var semaphore = new SemaphoreSlim(4, 4);
+
+        var tasks = sources.Select(async (source, idx) =>
         {
+            await semaphore.WaitAsync(ct);
             try
             {
                 switch (NormalizeKind(source.Kind))
                 {
                     case "manifest-feed":
-                        items.AddRange(await CheckManifestFeedAsync(source, ct));
+                        itemsBySource[idx] = await CheckManifestFeedAsync(source, ct);
                         break;
                     case "github-release":
-                        items.Add(await CheckGitHubReleaseAsync(source, ct));
+                        itemsBySource[idx] = [await CheckGitHubReleaseAsync(source, ct)];
                         break;
                     default:
-                        items.Add(await CheckStaticZipAsync(source, inspectStaticZips, ct));
+                        itemsBySource[idx] = [await CheckStaticZipAsync(source, inspectStaticZips, ct)];
                         break;
                 }
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
-                errors.Add($"{source.Label}: {ex.Message}");
-                items.Add(new DiscoveredExtensionItem
-                {
-                    SourceId = source.Id,
-                    SourceLabel = source.Label,
-                    SourceKind = source.Kind,
-                    ExtensionId = source.ExtensionId,
-                    Name = source.Label,
-                    DownloadUrl = source.Url,
-                    Error = ex.Message,
-                });
+                errorsBySource[idx] = $"{source.Label}: {ex.Message}";
+                itemsBySource[idx] =
+                [
+                    new DiscoveredExtensionItem
+                    {
+                        SourceId = source.Id,
+                        SourceLabel = source.Label,
+                        SourceKind = source.Kind,
+                        ExtensionId = source.ExtensionId,
+                        Name = source.Label,
+                        DownloadUrl = source.Url,
+                        Error = ex.Message,
+                    },
+                ];
             }
+            finally
+            {
+                semaphore.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks);
+
+        var allItems = new List<DiscoveredExtensionItem>();
+        var allErrors = new List<string>();
+        for (var i = 0; i < sources.Count; i++)
+        {
+            if (itemsBySource[i] != null)
+                allItems.AddRange(itemsBySource[i]);
+            if (errorsBySource[i] is { } err)
+                allErrors.Add(err);
         }
 
-        return new CheckSourcesResult(items, errors);
+        return new CheckSourcesResult(allItems, allErrors);
     }
 
     private async Task<List<DiscoveredExtensionItem>> CheckManifestFeedAsync(ExtensionSourceEntry source, CancellationToken ct)
@@ -232,9 +337,11 @@ public sealed class ExtensionUpdaterService
         var id = GetString(elem, "id") ?? fallbackId;
         var name = GetString(elem, "name") ?? id ?? source.Label;
         var version = GetString(elem, "version");
+        var minCoveVersion = GetString(elem, "minCoveVersion");
         var description = GetString(elem, "description");
         var downloadUrl = GetString(elem, "downloadUrl") ?? GetString(elem, "url") ?? string.Empty;
         var updatedAt = GetString(elem, "updatedAt");
+        var categories = GetStringList(elem, "categories");
 
         return new DiscoveredExtensionItem
         {
@@ -244,6 +351,8 @@ public sealed class ExtensionUpdaterService
             ExtensionId = id,
             Name = name,
             RemoteVersion = version,
+            MinCoveVersion = minCoveVersion,
+            Categories = categories,
             Description = description,
             DownloadUrl = downloadUrl,
             UpdatedAt = updatedAt,
@@ -253,6 +362,9 @@ public sealed class ExtensionUpdaterService
     private async Task<DiscoveredExtensionItem> CheckGitHubReleaseAsync(ExtensionSourceEntry source, CancellationToken ct)
     {
         var repo = NormalizeGitHubRepo(source.Url);
+        if (!GitHubRepoSlugRegex.IsMatch(repo) || repo.Contains("..", StringComparison.Ordinal))
+            throw new InvalidOperationException($"Invalid GitHub repository '{repo}'.");
+
         var apiUrl = $"https://api.github.com/repos/{repo}/releases?per_page=25";
         using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
@@ -344,7 +456,26 @@ public sealed class ExtensionUpdaterService
             };
         }
 
-        using var res = await _http.GetAsync(source.Url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var req = new HttpRequestMessage(HttpMethod.Get, source.Url);
+        if (_zipCache.TryGetValue(source.Url, out var cached))
+        {
+            if (!string.IsNullOrWhiteSpace(cached.ETag))
+                req.Headers.TryAddWithoutValidation("If-None-Match", cached.ETag);
+            if (cached.LastModified.HasValue)
+                req.Headers.IfModifiedSince = cached.LastModified.Value;
+        }
+
+        using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        if (res.StatusCode == HttpStatusCode.NotModified && cached != null)
+        {
+            return cached.Item with
+            {
+                SourceId = source.Id,
+                SourceLabel = source.Label,
+                SourceKind = source.Kind,
+            };
+        }
+
         res.EnsureSuccessStatusCode();
 
         if (res.Content.Headers.ContentLength is long len && len > MaxZipInspectBytes)
@@ -352,14 +483,23 @@ public sealed class ExtensionUpdaterService
 
         await using var stream = await res.Content.ReadAsStreamAsync(ct);
         using var ms = new MemoryStream();
-        await stream.CopyToAsync(ms, ct);
+        var buffer = new byte[81920];
+        long totalRead = 0;
+        int read;
+        while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+        {
+            totalRead += read;
+            if (totalRead > MaxZipInspectBytes)
+                throw new InvalidOperationException($"ZIP exceeds {MaxZipInspectBytes / (1024 * 1024)} MB inspection limit.");
+            ms.Write(buffer, 0, read);
+        }
         ms.Position = 0;
 
         using var archive = new ZipArchive(ms, ZipArchiveMode.Read, leaveOpen: false);
         var manifestEntry = archive.Entries.FirstOrDefault(e =>
             e.FullName.Equals("extension.json", StringComparison.OrdinalIgnoreCase) ||
-            e.FullName.EndsWith("/extension.json", StringComparison.OrdinalIgnoreCase) &&
-            e.FullName.Count(c => c == '/') == 1);
+            (e.FullName.EndsWith("/extension.json", StringComparison.OrdinalIgnoreCase) &&
+             e.FullName.Count(c => c == '/') == 1));
 
         if (manifestEntry == null)
             throw new InvalidOperationException("Remote ZIP does not contain an extension.json manifest.");
@@ -368,7 +508,7 @@ public sealed class ExtensionUpdaterService
         using var doc = await JsonDocument.ParseAsync(entryStream, cancellationToken: ct);
         var root = doc.RootElement;
 
-        return new DiscoveredExtensionItem
+        var discovered = new DiscoveredExtensionItem
         {
             SourceId = source.Id,
             SourceLabel = source.Label,
@@ -376,9 +516,20 @@ public sealed class ExtensionUpdaterService
             ExtensionId = source.ExtensionId ?? GetString(root, "id"),
             Name = GetString(root, "name") ?? source.Label,
             RemoteVersion = GetString(root, "version"),
+            MinCoveVersion = GetString(root, "minCoveVersion"),
+            Categories = GetStringList(root, "categories"),
             Description = GetString(root, "description"),
             DownloadUrl = source.Url,
         };
+
+        var etag = res.Headers.ETag?.Tag;
+        var lastModified = res.Content.Headers.LastModified;
+        if (!string.IsNullOrWhiteSpace(etag) || lastModified.HasValue)
+        {
+            _zipCache[source.Url] = new CachedZipEntry(etag, lastModified, discovered);
+        }
+
+        return discovered;
     }
 
     public static string NormalizeKind(string? kind) => kind?.Trim().ToLowerInvariant() switch
@@ -440,12 +591,33 @@ public sealed class ExtensionUpdaterService
 
     private static string? GetString(JsonElement elem, string propName)
     {
+        if (elem.ValueKind != JsonValueKind.Object) return null;
         foreach (var prop in elem.EnumerateObject())
         {
             if (string.Equals(prop.Name, propName, StringComparison.OrdinalIgnoreCase) &&
                 prop.Value.ValueKind == JsonValueKind.String)
             {
                 return prop.Value.GetString();
+            }
+        }
+        return null;
+    }
+
+    private static IReadOnlyList<string>? GetStringList(JsonElement elem, string propName)
+    {
+        if (elem.ValueKind != JsonValueKind.Object) return null;
+        foreach (var prop in elem.EnumerateObject())
+        {
+            if (string.Equals(prop.Name, propName, StringComparison.OrdinalIgnoreCase) &&
+                prop.Value.ValueKind == JsonValueKind.Array)
+            {
+                var list = new List<string>();
+                foreach (var item in prop.Value.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { } s && !string.IsNullOrWhiteSpace(s))
+                        list.Add(s);
+                }
+                return list;
             }
         }
         return null;

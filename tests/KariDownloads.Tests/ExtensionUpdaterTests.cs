@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Cove.Plugins;
@@ -26,10 +27,11 @@ public sealed class ExtensionUpdaterTests
         var ui = extension.GetUIManifest();
         Assert.NotNull(ui);
         Assert.Contains(ui.Pages, p => p.ComponentName == "ExtensionUpdaterPage");
+        Assert.Equal("0.1.2", extension.Version);
     }
 
     [Fact]
-    public async Task Sources_SeedsDefaultFeed_AndAllowsExternalUpsertAndDelete()
+    public async Task Sources_SeedsDefaultFeed_AndValidatesUpsertAndDelete()
     {
         var store = new InMemoryExtensionStore();
         var service = new ExtensionUpdaterService();
@@ -52,6 +54,19 @@ public sealed class ExtensionUpdaterTests
         var afterAdd = await service.GetSourcesAsync();
         Assert.Equal(2, afterAdd.Count);
 
+        // Reject invalid URLs or bad GitHub repo slugs
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpsertSourceAsync(new ExtensionSourceEntry
+        {
+            Kind = "static-zip",
+            Url = "ftp://example.com/bad.zip",
+        }));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpsertSourceAsync(new ExtensionSourceEntry
+        {
+            Kind = "github-release",
+            Url = "invalid/../slug",
+        }));
+
         var deleted = await service.DeleteSourceAsync("ext-custom-zip");
         Assert.True(deleted);
         var afterDelete = await service.GetSourcesAsync();
@@ -59,9 +74,11 @@ public sealed class ExtensionUpdaterTests
     }
 
     [Fact]
-    public async Task CheckSourcesAsync_ResolvesManifestFeed_GitHubRelease_AndStaticZip()
+    public async Task CheckSourcesAsync_ResolvesManifestFeed_GitHubRelease_AndStaticZipWithETagCache()
     {
         var zipBytes = BuildTestExtensionZip("com.external.sample", "Sample External", "2.4.1");
+        var zipDownloads = 0;
+
         var handler = new StubHttpHandler(req =>
         {
             var url = req.RequestUri!.ToString();
@@ -75,6 +92,8 @@ public sealed class ExtensionUpdaterTests
                       "id": "karinauts.downloaders.thisvid",
                       "name": "ThisVid Downloader",
                       "version": "0.1.5",
+                      "minCoveVersion": "1.8.0",
+                      "categories": ["downloader"],
                       "description": "Downloads videos from ThisVid",
                       "downloadUrl": "https://github.com/otter-twunk/kari-downloads/releases/download/latest/karinauts.downloaders.thisvid-latest.zip"
                     }
@@ -108,10 +127,18 @@ public sealed class ExtensionUpdaterTests
 
             if (url == "https://cdn.example.com/sample-latest.zip")
             {
-                return new HttpResponseMessage(HttpStatusCode.OK)
+                if (req.Headers.IfNoneMatch.Any(t => t.Tag == "\"v241\""))
+                {
+                    return new HttpResponseMessage(HttpStatusCode.NotModified);
+                }
+
+                Interlocked.Increment(ref zipDownloads);
+                var resp = new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new ByteArrayContent(zipBytes),
                 };
+                resp.Headers.ETag = new EntityTagHeaderValue("\"v241\"");
+                return resp;
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
@@ -149,10 +176,12 @@ public sealed class ExtensionUpdaterTests
 
         Assert.Empty(result.Errors);
         Assert.Equal(3, result.Items.Count);
+        Assert.Equal(1, zipDownloads);
 
         var feedItem = Assert.Single(result.Items, i => i.SourceId == "feed-1");
         Assert.Equal("karinauts.downloaders.thisvid", feedItem.ExtensionId);
         Assert.Equal("0.1.5", feedItem.RemoteVersion);
+        Assert.Equal("1.8.0", feedItem.MinCoveVersion);
 
         var ghItem = Assert.Single(result.Items, i => i.SourceId == "gh-1");
         Assert.Equal("com.someone.cool", ghItem.ExtensionId);
@@ -162,6 +191,13 @@ public sealed class ExtensionUpdaterTests
         Assert.Equal("com.external.sample", zipItem.ExtensionId);
         Assert.Equal("Sample External", zipItem.Name);
         Assert.Equal("2.4.1", zipItem.RemoteVersion);
+
+        // Second check reuses ETag cache (304 NotModified) without re-downloading ZIP bytes
+        var cachedResult = await service.CheckSourcesAsync(inspectStaticZips: true);
+        Assert.Empty(cachedResult.Errors);
+        Assert.Equal(1, zipDownloads);
+        var cachedZipItem = Assert.Single(cachedResult.Items, i => i.SourceId == "zip-1");
+        Assert.Equal("2.4.1", cachedZipItem.RemoteVersion);
     }
 
     private static HttpResponseMessage JsonResponse(string json) => new(HttpStatusCode.OK)

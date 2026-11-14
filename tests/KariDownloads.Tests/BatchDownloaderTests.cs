@@ -52,7 +52,7 @@ public sealed class BatchDownloaderTests
 
         Assert.Equal("karinauts.tools.batch-downloader", root.GetProperty("id").GetString());
         Assert.Equal("Batch URL Downloader", root.GetProperty("name").GetString());
-        Assert.Equal("0.1.2", root.GetProperty("version").GetString());
+        Assert.Equal("0.1.3", root.GetProperty("version").GetString());
         Assert.Equal("BatchDownloader.dll", root.GetProperty("entryDll").GetString());
         Assert.Equal("dist/bundle.js", root.GetProperty("jsBundle").GetString());
         Assert.Equal("dist/bundle.css", root.GetProperty("cssBundle").GetString());

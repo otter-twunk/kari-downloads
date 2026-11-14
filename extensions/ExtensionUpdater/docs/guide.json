@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "extension-updater-guide",
+  "title": "Extension Updater",
+  "description": "Discover, install, and batch-update Cove extensions from rolling manifest feeds, GitHub releases, and static ZIP URLs.",
+  "order": 30,
+  "sections": [
+    {
+      "id": "overview",
+      "title": "Checking & Installing Updates",
+      "order": 10,
+      "blocks": [
+        {
+          "type": "paragraph",
+          "text": "Open Extension Updater from the navigation sidebar to compare your installed extensions against remote manifest feeds, GitHub repositories, and static ZIP packages."
+        },
+        {
+          "type": "steps",
+          "items": [
+            "Click Check All to query all enabled extension sources concurrently.",
+            "Filter discovered extensions by status (Updates, Installed, Not Installed), category (Downloaders, Scrapers, Tools & UI), or search keyword.",
+            "Click Update All to batch-install all available updates (updating Extension Updater itself last), or click Update / Install on individual extensions."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "external-sources",
+      "title": "Managing External Sources",
+      "order": 20,
+      "blocks": [
+        {
+          "type": "table",
+          "columns": ["Source Type", "Use Case"],
+          "rows": [
+            ["Manifest JSON Feed", "Multi-extension repositories publishing a rolling latest-manifest.json catalog"],
+            ["GitHub Repo Release", "Single or multi-extension GitHub repositories using release tags and .zip assets"],
+            ["Static ZIP URL", "Direct URL to a rolling or versioned extension .zip package (with ETag caching)"]
+          ]
+        }
+      ]
+    }
+  ]
+}

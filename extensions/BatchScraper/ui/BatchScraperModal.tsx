@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "@cove/runtime/react";
+import { extensionFetch } from "@cove/runtime/api";
+import { useQueryClient } from "@cove/runtime/react-query";
 import {
   Sparkles,
   Search,
@@ -17,16 +19,20 @@ import {
   Link as LinkIcon,
   Play,
   Check,
-} from "lucide-react";
+  RefreshCw,
+} from "@cove/runtime/lucide-react";
 import {
+  AUTO_MATCH_SCRAPER_ID,
   ScraperSummary,
   MetadataBlendConfig,
   BatchItemProgress,
   fetchVideoDetails,
   processVideoScrape,
+  resolveScraperForVideo,
 } from "./utils/batchScrapeRunner";
 
 export function BatchScraperModal() {
+  const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
   const [videoIds, setVideoIds] = useState<number[]>([]);
   const [scrapers, setScrapers] = useState<ScraperSummary[]>([]);
@@ -37,7 +43,8 @@ export function BatchScraperModal() {
 
   // Blend Configuration
   const [config, setConfig] = useState<MetadataBlendConfig>({
-    selectedScraperId: "",
+    selectedScraperId: AUTO_MATCH_SCRAPER_ID,
+    fallbackScraperId: "",
     performersMode: "merge",
     createMissingPerformers: true,
     hydratePerformers: true,
@@ -48,7 +55,9 @@ export function BatchScraperModal() {
     createMissingStudio: true,
     dateStrategy: "if_empty",
     detailsStrategy: "if_empty",
-    coverStrategy: "skip",
+    codeStrategy: "if_empty",
+    directorStrategy: "if_empty",
+    coverStrategy: "if_missing",
     urlsMode: "merge",
     markOrganized: false,
     concurrency: 2,
@@ -94,14 +103,26 @@ export function BatchScraperModal() {
     let cancelled = false;
     setLoadingScrapers(true);
 
-    fetch("/api/system/scrapers")
+    extensionFetch("/api/system/scrapers")
       .then((res) => (res.ok ? res.json() : []))
       .then((data: ScraperSummary[]) => {
         if (cancelled) return;
         const videoScrapers = data.filter((s) => s.entityType?.toLowerCase() === "video");
         setScrapers(videoScrapers);
-        if (videoScrapers.length > 0 && !config.selectedScraperId) {
-          setConfig((prev) => ({ ...prev, selectedScraperId: videoScrapers[0].id }));
+        if (videoScrapers.length > 0) {
+          setConfig((prev) => {
+            const validSelected =
+              prev.selectedScraperId === AUTO_MATCH_SCRAPER_ID ||
+              videoScrapers.some((s) => s.id === prev.selectedScraperId);
+            const validFallback =
+              prev.fallbackScraperId === "" ||
+              videoScrapers.some((s) => s.id === prev.fallbackScraperId);
+            return {
+              ...prev,
+              selectedScraperId: validSelected ? prev.selectedScraperId : AUTO_MATCH_SCRAPER_ID,
+              fallbackScraperId: validFallback ? prev.fallbackScraperId : videoScrapers[0].id,
+            };
+          });
         }
       })
       .catch((err) => {
@@ -135,91 +156,158 @@ export function BatchScraperModal() {
     return { total, applied, noMatch, error, inProgress, processed, progressPercent };
   }, [batchItems]);
 
-  // Start the batch process
-  const startBatch = useCallback(async () => {
-    if (!selectedScraper || batchItems.length === 0) return;
+  const runBatchForIds = useCallback(
+    async (targetIds: number[]) => {
+      if (scrapers.length === 0 || targetIds.length === 0) return;
 
-    setActiveStep("progress");
-    setIsRunning(true);
-    setIsCompleted(false);
+      setActiveStep("progress");
+      setIsRunning(true);
+      setIsCompleted(false);
 
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-    const signal = abortController.signal;
+      const abortController = new AbortController();
+      abortControllerRef.current = abortController;
+      const signal = abortController.signal;
 
-    const queue = [...videoIds];
-    const concurrency = Math.max(1, Math.min(config.concurrency, 4));
+      const queue = [...targetIds];
+      const concurrency = Math.max(1, Math.min(config.concurrency, 4));
 
-    const updateItem = (id: number, patch: Partial<BatchItemProgress>) => {
+      const updateItem = (id: number, patch: Partial<BatchItemProgress>) => {
+        setBatchItems((prev) =>
+          prev.map((item) => (item.videoId === id ? { ...item, ...patch } : item))
+        );
+      };
+
+      // Reset target items to pending
+      const targetSet = new Set(targetIds);
       setBatchItems((prev) =>
-        prev.map((item) => (item.videoId === id ? { ...item, ...patch } : item))
+        prev.map((item) =>
+          targetSet.has(item.videoId)
+            ? { ...item, status: "pending", statusMessage: undefined }
+            : item
+        )
       );
-    };
 
-    const worker = async () => {
-      while (queue.length > 0 && !signal.aborted) {
-        const videoId = queue.shift();
-        if (videoId == null) break;
+      let anyApplied = false;
 
-        updateItem(videoId, { status: "fetching", statusMessage: "Fetching metadata..." });
+      const worker = async () => {
+        while (queue.length > 0 && !signal.aborted) {
+          const videoId = queue.shift();
+          if (videoId == null) break;
 
-        try {
-          const video = await fetchVideoDetails(videoId, signal);
-          const displayTitle = video.title || video.files?.[0]?.basename || `Video #${videoId}`;
-          updateItem(videoId, {
-            title: displayTitle,
-            filename: video.files?.[0]?.basename || "",
-            status: "scraping",
-            statusMessage: `Querying ${selectedScraper.name}...`,
-          });
+          updateItem(videoId, { status: "fetching", statusMessage: "Fetching metadata..." });
 
-          updateItem(videoId, { status: "applying", statusMessage: "Applying metadata..." });
-          const { matchedTitle, appliedSummary } = await processVideoScrape(
-            video,
-            selectedScraper,
-            config,
-            signal
-          );
+          try {
+            const video = await fetchVideoDetails(videoId, signal);
+            const displayTitle = video.title || video.files?.[0]?.basename || `Video #${videoId}`;
+            const targetScraper = resolveScraperForVideo(video, scrapers, config);
 
-          updateItem(videoId, {
-            status: "applied",
-            statusMessage: "Successfully applied",
-            matchedTitle,
-            appliedSummary,
-          });
-        } catch (err: any) {
-          if (signal.aborted) {
-            updateItem(videoId, { status: "pending", statusMessage: "Cancelled" });
-            return;
+            if (!targetScraper) {
+              updateItem(videoId, {
+                title: displayTitle,
+                filename: video.files?.[0]?.basename || "",
+                status: "no_match",
+                statusMessage: "No matching URL scraper or fallback configured",
+              });
+              continue;
+            }
+
+            updateItem(videoId, {
+              title: displayTitle,
+              filename: video.files?.[0]?.basename || "",
+              scraperName: targetScraper.name,
+              status: "scraping",
+              statusMessage: `Querying ${targetScraper.name}...`,
+            });
+
+            const { matchedTitle, appliedSummary, scraperName } = await processVideoScrape(
+              video,
+              targetScraper,
+              config,
+              signal,
+              (stage, sName) => {
+                if (stage === "scraping") {
+                  updateItem(videoId, {
+                    status: "scraping",
+                    scraperName: sName,
+                    statusMessage: `Querying ${sName}...`,
+                  });
+                } else {
+                  updateItem(videoId, {
+                    status: "applying",
+                    scraperName: sName,
+                    statusMessage: "Applying metadata...",
+                  });
+                }
+              }
+            );
+
+            anyApplied = true;
+            updateItem(videoId, {
+              status: "applied",
+              statusMessage: "Successfully applied",
+              scraperName,
+              matchedTitle,
+              appliedSummary,
+            });
+          } catch (err: any) {
+            if (signal.aborted) {
+              updateItem(videoId, { status: "pending", statusMessage: "Cancelled" });
+              return;
+            }
+
+            const message = err?.message || "Unknown error";
+            const isNoMatch =
+              message.toLowerCase().includes("no match") ||
+              message.toLowerCase().includes("no result") ||
+              message.toLowerCase().includes("only supports url") ||
+              message.toLowerCase().includes("404");
+
+            updateItem(videoId, {
+              status: isNoMatch ? "no_match" : "error",
+              statusMessage: message,
+            });
           }
+        }
+      };
 
-          const message = err?.message || "Unknown error";
-          const isNoMatch =
-            message.toLowerCase().includes("no match") ||
-            message.toLowerCase().includes("no result") ||
-            message.toLowerCase().includes("404");
+      const workers = Array.from({ length: concurrency }, () => worker());
+      await Promise.all(workers);
 
-          updateItem(videoId, {
-            status: isNoMatch ? "no_match" : "error",
-            statusMessage: message,
-          });
+      setIsRunning(false);
+      setIsCompleted(true);
+
+      if (anyApplied) {
+        try {
+          await queryClient.invalidateQueries({ queryKey: ["videos"] });
+        } catch {
+          // ignore query invalidation errors
         }
       }
-    };
+    },
+    [config, queryClient, scrapers]
+  );
 
-    const workers = Array.from({ length: concurrency }, () => worker());
-    await Promise.all(workers);
+  // Start the batch process for all videos
+  const startBatch = useCallback(() => {
+    void runBatchForIds(videoIds);
+  }, [runBatchForIds, videoIds]);
 
-    setIsRunning(false);
-    setIsCompleted(true);
-  }, [batchItems.length, config, selectedScraper, videoIds]);
+  // Retry only failed or no_match items
+  const retryUnmatchedOrFailed = useCallback(() => {
+    const retryIds = batchItems
+      .filter((i) => i.status === "error" || i.status === "no_match")
+      .map((i) => i.videoId);
+    if (retryIds.length > 0) {
+      void runBatchForIds(retryIds);
+    }
+  }, [batchItems, runBatchForIds]);
 
-  const handleStop = () => {
+  const handleStop = useCallback(() => {
     abortControllerRef.current?.abort();
     setIsRunning(false);
-  };
+  }, []);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     if (isRunning) {
       if (!window.confirm("A batch scrape is in progress. Are you sure you want to stop and close?")) {
         return;
@@ -227,7 +315,20 @@ export function BatchScraperModal() {
       handleStop();
     }
     setIsOpen(false);
-  };
+  }, [handleStop, isRunning]);
+
+  // Dismiss on Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        handleClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen, handleClose]);
 
   if (!isOpen) return null;
 
@@ -240,6 +341,9 @@ export function BatchScraperModal() {
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="batch-scraper-dialog-title"
         className="batch-scraper-dialog w-full max-w-4xl rounded-xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden border border-border"
         style={{ pointerEvents: "auto" }}
       >
@@ -251,13 +355,15 @@ export function BatchScraperModal() {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-bold text-foreground">Batch Video Scraper</h2>
+                <h2 id="batch-scraper-dialog-title" className="text-lg font-bold text-foreground">
+                  Batch Video Scraper
+                </h2>
                 <span className="text-xs px-2.5 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/25 font-semibold">
                   {videoIds.length} {videoIds.length === 1 ? "video" : "videos"} selected
                 </span>
               </div>
               <p className="text-xs text-muted mt-0.5">
-                Scrape multiple videos and customize field-level metadata blending
+                Auto-match or select a scraper and customize field-level metadata blending
               </p>
             </div>
           </div>
@@ -266,6 +372,7 @@ export function BatchScraperModal() {
             onClick={handleClose}
             className="p-1.5 text-muted hover:text-foreground rounded-lg hover:bg-surface transition-colors cursor-pointer"
             title="Close"
+            aria-label="Close Batch Video Scraper"
           >
             <X className="w-5 h-5" />
           </button>
@@ -326,24 +433,53 @@ export function BatchScraperModal() {
                     <span>No video scrapers found. Please install or enable a video scraper extension first.</span>
                   </div>
                 ) : (
-                  <div className="space-y-2">
-                    <select
-                      value={config.selectedScraperId}
-                      onChange={(e) => setConfig({ ...config, selectedScraperId: e.target.value })}
-                      className="w-full px-3.5 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-accent cursor-pointer"
-                    >
-                      {scrapers.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name} ({s.supportedScrapes.join(", ")})
-                        </option>
-                      ))}
-                    </select>
-                    {selectedScraper && (
-                      <div className="text-xs text-muted bg-card/60 p-2.5 rounded-lg border border-border">
-                        <span className="font-semibold text-foreground">Matching Strategy: </span>
-                        Videos with recognized URLs will scrape directly by URL; all others will search by cleaned title or filename.
+                  <div className="space-y-2.5">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div>
+                        <span className="block text-[11px] text-muted mb-1">Primary Strategy</span>
+                        <select
+                          value={config.selectedScraperId}
+                          onChange={(e) => setConfig({ ...config, selectedScraperId: e.target.value })}
+                          className="w-full px-3.5 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-accent cursor-pointer"
+                        >
+                          <option value={AUTO_MATCH_SCRAPER_ID}>
+                            ✨ Auto-Match by Video URL (Recommended)
+                          </option>
+                          {scrapers.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} ({s.supportedScrapes.join(", ")})
+                            </option>
+                          ))}
+                        </select>
                       </div>
-                    )}
+
+                      {config.selectedScraperId === AUTO_MATCH_SCRAPER_ID && (
+                        <div>
+                          <span className="block text-[11px] text-muted mb-1">
+                            Fallback Scraper (when video has no matching URL)
+                          </span>
+                          <select
+                            value={config.fallbackScraperId ?? ""}
+                            onChange={(e) => setConfig({ ...config, fallbackScraperId: e.target.value })}
+                            className="w-full px-3.5 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground focus:outline-none focus:border-accent cursor-pointer"
+                          >
+                            <option value="">None (Skip videos without matching URL)</option>
+                            {scrapers.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.name} ({s.supportedScrapes.join(", ")})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-muted bg-card/60 p-2.5 rounded-lg border border-border">
+                      <span className="font-semibold text-foreground">Matching Strategy: </span>
+                      {config.selectedScraperId === AUTO_MATCH_SCRAPER_ID
+                        ? "Each video's URLs are matched against all installed scrapers automatically. Videos without a matching URL use the selected fallback scraper."
+                        : `Videos with URLs matching ${selectedScraper?.name ?? "the scraper"} scrape directly by URL; others search by cleaned title or filename.`}
+                    </div>
                   </div>
                 )}
               </div>
@@ -522,11 +658,11 @@ export function BatchScraperModal() {
                     </p>
                   </div>
 
-                  {/* Release Date & Synopsis */}
+                  {/* Release Date, Synopsis, Code & Director */}
                   <div className="batch-scraper-card p-4 rounded-xl border border-border space-y-3">
                     <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <Calendar className="w-4 h-4 text-purple-400" />
-                      <span>Date & Synopsis</span>
+                      <span>Date, Synopsis, Code & Director</span>
                     </div>
                     <div className="flex gap-2">
                       {(["if_empty", "overwrite", "skip"] as const).map((mode) => {
@@ -540,6 +676,8 @@ export function BatchScraperModal() {
                                 ...config,
                                 dateStrategy: mode,
                                 detailsStrategy: mode,
+                                codeStrategy: mode,
+                                directorStrategy: mode,
                               })
                             }
                             className={`flex-1 py-2 px-3 text-xs font-semibold rounded-lg border transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
@@ -643,7 +781,9 @@ export function BatchScraperModal() {
                     )}
                     <span className="font-bold text-foreground">
                       {isRunning
-                        ? `Scraping batch with ${selectedScraper?.name}...`
+                        ? config.selectedScraperId === AUTO_MATCH_SCRAPER_ID
+                          ? "Scraping batch (Auto-Match URLs)..."
+                          : `Scraping batch with ${selectedScraper?.name}...`
                         : isCompleted
                         ? "Batch Scrape Completed"
                         : "Ready to start"}
@@ -687,10 +827,15 @@ export function BatchScraperModal() {
                       key={item.videoId}
                       className="px-4 py-3 flex items-center justify-between text-xs hover:bg-card-hover transition-colors"
                     >
-                      <div className="space-y-0.5 max-w-[60%]">
+                      <div className="space-y-0.5 max-w-[65%]">
                         <div className="font-semibold text-foreground truncate flex items-center gap-1.5">
                           <Film className="w-3.5 h-3.5 text-muted flex-shrink-0" />
                           <span className="truncate">{item.title}</span>
+                          {item.scraperName && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-surface text-muted border border-border flex-shrink-0">
+                              {item.scraperName}
+                            </span>
+                          )}
                         </div>
                         {item.matchedTitle && (
                           <div className="text-[11px] text-muted truncate flex items-center gap-1">
@@ -729,7 +874,10 @@ export function BatchScraperModal() {
                           </span>
                         )}
                         {item.status === "no_match" && (
-                          <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 font-semibold">
+                          <span
+                            className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 font-semibold"
+                            title={item.statusMessage}
+                          >
                             <AlertTriangle className="w-3 h-3" />
                             No Match
                           </span>
@@ -755,7 +903,7 @@ export function BatchScraperModal() {
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-border bg-card">
           <div>
-            {activeStep === "progress" && !isRunning && !isCompleted && (
+            {activeStep === "progress" && !isRunning && (
               <button
                 type="button"
                 onClick={() => setActiveStep("configure")}
@@ -798,13 +946,25 @@ export function BatchScraperModal() {
                     Stop Batch
                   </button>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={handleClose}
-                    className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold bg-accent hover:bg-accent-hover text-white rounded-lg transition-colors cursor-pointer"
-                  >
-                    Done
-                  </button>
+                  <>
+                    {(stats.noMatch > 0 || stats.error > 0) && (
+                      <button
+                        type="button"
+                        onClick={retryUnmatchedOrFailed}
+                        className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold border border-border bg-surface hover:bg-card-hover text-foreground rounded-lg transition-colors cursor-pointer"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Retry Unmatched ({stats.noMatch + stats.error})
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleClose}
+                      className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold bg-accent hover:bg-accent-hover text-white rounded-lg transition-colors cursor-pointer"
+                    >
+                      Done
+                    </button>
+                  </>
                 )}
               </>
             )}

@@ -1,7 +1,7 @@
 {
   "id": "com.example.ui",
   "name": "Example UI Extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A minimal UI extension template.",
   "author": "Example Author",
   "url": "https://github.com/example/cove-extensions",
@@ -9,7 +9,7 @@
     "ui",
     "tools"
   ],
-  "minCoveVersion": "0.7.1",
+  "minCoveVersion": "1.8.0",
   "entryDll": "ExampleUi.dll",
   "dependencies": {}
 }

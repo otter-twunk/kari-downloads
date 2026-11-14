@@ -2,12 +2,13 @@
   "schemaVersion": 1,
   "id": "batch-url-downloader",
   "title": "Batch URL Downloader",
-  "description": "Paste multiple media URLs, inspect compatible Cove downloaders, apply initial metadata tags, and queue background batch downloads.",
+  "description": "Paste multiple media URLs, inspect compatible Cove downloaders, detect library duplicates, apply initial metadata tags or groups, and queue background batch downloads.",
   "order": 10,
   "sections": [
     {
       "id": "quick-start",
       "title": "Quick Start",
+      "order": 10,
       "blocks": [
         {
           "type": "paragraph",
@@ -17,8 +18,8 @@
           "type": "steps",
           "items": [
             "Paste one or more URLs into the Paste URLs box. Duplicate and trailing punctuation are cleaned automatically.",
-            "Optionally select a Studio, Tags, or Performers under Initial Metadata Tagging to pre-tag every queued item.",
-            "Click Inspect Downloaders to check which installed downloader matches each URL and preview available quality options.",
+            "Optionally select a Studio, Group / Series, Tags, or Performers under Initial Metadata Tagging to pre-tag every queued item.",
+            "Click Inspect Downloaders to check which installed downloader matches each URL, detect existing library duplicates, and preview available quality options.",
             "Click Queue Downloads to start the background download job."
           ]
         }
@@ -27,6 +28,7 @@
     {
       "id": "quality-and-max-height",
       "title": "Quality & Max Download Height",
+      "order": 20,
       "blocks": [
         {
           "type": "note",
@@ -41,6 +43,7 @@
     {
       "id": "api-endpoints",
       "title": "Automation API",
+      "order": 30,
       "blocks": [
         {
           "type": "table",
