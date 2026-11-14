@@ -166,14 +166,17 @@ jobs:
       - name: Update rolling latest release & manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
           # Ensure the rolling 'latest' release exists (never marked as repo's latest release)
           if ! gh release view latest >/dev/null 2>&1; then
             gh release create latest \
+              --target "$GITHUB_SHA" \
               --title "Latest Rolling Releases" \
               --notes "Static rolling-release ZIPs and latest-manifest.json for automatic/static-URL updates." \
               --latest=false
