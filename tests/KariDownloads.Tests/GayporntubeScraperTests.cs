@@ -178,11 +178,35 @@ public sealed class GayporntubeScraperTests
         Assert.Equal("Twinkie Tuesday", first.Title);
         Assert.Equal("1501731", first.Code);
         Assert.Equal("https://www.gayporntube.com/video/1501731/twink-bro-4", first.Urls.First());
+        Assert.Equal("https://static.gayporntube.com/contents/videos_screenshots/1501000/1501731/246x183/2.jpg", first.ImageUrl);
         Assert.Equal("GayPornTube", first.StudioName);
 
         var second = results[1];
         Assert.Equal("Winter Heating Up", second.Title);
         Assert.Equal("1520626", second.Code);
         Assert.Equal("https://www.gayporntube.com/video/1520626/winter-heating-up", second.Urls.First());
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_WhenUrlMissing_SearchesByTitleAndScrapesCandidate()
+    {
+        const string searchUrl = "https://www.gayporntube.com/search/videos/?q=twink";
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchUrl, SearchResultsHtml)
+            .MapHtml("https://www.gayporntube.com/video/1501731/twink-bro-4", VideoDetailHtml);
+
+        var extension = new GayporntubeScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                GayporntubeScraperExtension.PrimaryScraperId,
+                new VideoScrapeInput { Title = "twink" },
+                new ScraperPermissions(["gayporntube.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Frat guy pretend to ride naked", scraped.Title);
+        Assert.Equal("1501731", scraped.Code);
     }
 }

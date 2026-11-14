@@ -484,11 +484,22 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
                 code = idProp.GetInt64().ToString(CultureInfo.InvariantCulture);
             code ??= ExtractComCode(url, null);
 
+            string? imageUrl = null;
+            if (item.TryGetProperty("_embedded", out var embedded) && embedded.ValueKind == JsonValueKind.Object
+                && embedded.TryGetProperty("wp:featuredmedia", out var mediaList) && mediaList.ValueKind == JsonValueKind.Array
+                && mediaList.GetArrayLength() > 0)
+            {
+                imageUrl = TryGetJsonString(mediaList[0], "source_url");
+            }
+            if (IsGenericComLogo(imageUrl))
+                imageUrl = null;
+
             results.Add(new ScrapedVideoDto
             {
                 SourceScraperId = VideoScraperId,
                 Title = title,
                 Code = code,
+                ImageUrl = imageUrl,
                 StudioName = DefaultStudioName,
                 Urls = [url]
             });
@@ -502,24 +513,66 @@ public sealed class JustTheGaysComScraperExtension : CoveExtensionBase, IScraper
         var results = new List<ScrapedVideoDto>();
         var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (Match match in SearchVideoLinkRegex.Matches(html))
+        var articleMatches = ArticleBlockRegex.Matches(html);
+        if (articleMatches.Count > 0)
         {
-            var href = match.Groups["href"].Value.Trim();
-            if (!IsSupportedVideoUrl(href) || !seenUrls.Add(href))
-                continue;
-
-            var title = CleanComTitle(ScraperUtilities.CleanText(match.Groups["inner"].Value));
-            if (string.IsNullOrWhiteSpace(title))
-                continue;
-
-            results.Add(new ScrapedVideoDto
+            foreach (Match art in articleMatches)
             {
-                SourceScraperId = VideoScraperId,
-                Title = title,
-                Code = ExtractComCode(href, null),
-                StudioName = DefaultStudioName,
-                Urls = [href]
-            });
+                var content = art.Value;
+                var linkMatch = SearchVideoLinkRegex.Match(content);
+                if (!linkMatch.Success)
+                    continue;
+
+                var href = linkMatch.Groups["href"].Value.Trim();
+                if (!IsSupportedVideoUrl(href) || !seenUrls.Add(href))
+                    continue;
+
+                var title = CleanComTitle(ScraperUtilities.CleanText(linkMatch.Groups["inner"].Value));
+                if (string.IsNullOrWhiteSpace(title))
+                    continue;
+
+                var imgMatch = Regex.Match(content, @"<img\b[^>]*\b(?:src|data-src)\s*=\s*['""](?<url>https?://[^'""\s<>]+)['""]", RegexOptions.IgnoreCase);
+                string? imageUrl = null;
+                if (imgMatch.Success)
+                {
+                    imageUrl = imgMatch.Groups["url"].Value.Trim();
+                    if (IsGenericComLogo(imageUrl))
+                        imageUrl = null;
+                }
+
+                results.Add(new ScrapedVideoDto
+                {
+                    SourceScraperId = VideoScraperId,
+                    Title = title,
+                    Code = ExtractComCode(href, null),
+                    ImageUrl = imageUrl,
+                    StudioName = DefaultStudioName,
+                    Urls = [href]
+                });
+            }
+        }
+
+        if (results.Count == 0)
+        {
+            foreach (Match match in SearchVideoLinkRegex.Matches(html))
+            {
+                var href = match.Groups["href"].Value.Trim();
+                if (!IsSupportedVideoUrl(href) || !seenUrls.Add(href))
+                    continue;
+
+                var title = CleanComTitle(ScraperUtilities.CleanText(match.Groups["inner"].Value));
+                if (string.IsNullOrWhiteSpace(title))
+                    continue;
+
+                results.Add(new ScrapedVideoDto
+                {
+                    SourceScraperId = VideoScraperId,
+                    Title = title,
+                    Code = ExtractComCode(href, null),
+                    StudioName = DefaultStudioName,
+                    Urls = [href]
+                });
+            }
         }
 
         return results;

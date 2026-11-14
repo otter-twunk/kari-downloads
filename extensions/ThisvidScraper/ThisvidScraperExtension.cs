@@ -25,7 +25,7 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex VideoIdRegex = new(
-        @"(?:data-video-id=[""'](?<id>\d+)[""']|videoId:\s*['""]?(?<id>\d+)|/(?:videos|embed)/(?<id>\d+))",
+        @"/(?:videos|embed)/(?<id>\d+)|(?:data-video-id=[""'](?<id>\d+)[""']|videoId:\s*['""]?(?<id>\d+))",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex TitleSuffixRegex = new(
@@ -86,7 +86,35 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
     {
         var rawUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedUrl(rawUrl))
+        {
+            var fallbackTitle = ScraperUtilities.CleanText(request.Input.Title);
+            if (!string.IsNullOrWhiteSpace(fallbackTitle))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(PrimaryScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         var sourceUrl = NormalizeVideoUrl(rawUrl!);
         var headers = GetDefaultHeaders();
@@ -246,6 +274,14 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
 
         var deduplicatedTags = ScraperUtilities.DeduplicateStrings(tagNames);
 
+        var performers = new List<string>(structured.PerformerNames);
+        foreach (Match match in Regex.Matches(html, @"(?is)href=['""](?:https?://(?:www\.)?thisvid\.com)?/models/[^/'""]+/?['""][^>]*>(?<name>[^<]+)</a>"))
+        {
+            var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
+            if (!string.IsNullOrWhiteSpace(name) && !performers.Contains(name, StringComparer.OrdinalIgnoreCase))
+                performers.Add(name);
+        }
+
         // Canonical URL
         var canonicalUrl = ScraperUtilities.ExtractMetaContent(html, "og:url");
         if (string.IsNullOrWhiteSpace(canonicalUrl) || !Uri.TryCreate(canonicalUrl, UriKind.Absolute, out _))
@@ -261,6 +297,7 @@ public sealed class ThisvidScraperExtension : CoveExtensionBase, IScraperProvide
             ImageUrl = imageUrl,
             Urls = [canonicalUrl],
             StudioName = DefaultStudioName,
+            PerformerNames = ScraperUtilities.DeduplicateStrings(performers),
             TagNames = deduplicatedTags
         };
     }

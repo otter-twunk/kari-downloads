@@ -51,6 +51,9 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
         @"<link\b[^>]+rel\s*=\s*['""]alternate['""][^>]+type\s*=\s*['""]application/json['""][^>]+href\s*=\s*['""](?<href>https?://[^'""]+/wp-json/wp/v2/video/\d+)['""]",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private IServiceProvider? _services;
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
@@ -212,13 +215,16 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
 
     internal async Task<ResolvedMediaPage> InspectPageAsync(string url, HttpClient client, CancellationToken ct)
     {
+        if (_pageCache.TryGetValue(url, out var cached) && cached.Expiry > DateTime.UtcNow)
+            return cached.Page;
+
         var uri = new Uri(url);
 
         if (DownloaderUtilities.IsHost(uri, "justthegays.hr1alfri.xyz")
             || uri.AbsolutePath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
         {
             var fallbackTitle = DownloaderUtilities.DeriveTitleFromUrl(url, DefaultStudioName);
-            return new ResolvedMediaPage(
+            var directPage = new ResolvedMediaPage(
                 PageUrl: url,
                 Title: fallbackTitle,
                 MediaUrl: url,
@@ -228,12 +234,16 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
                 ImageUrl: null,
                 PerformerNames: [],
                 TagNames: []);
+            _pageCache[url] = (directPage, DateTime.UtcNow.AddMinutes(10));
+            return directPage;
         }
 
         if (WpJsonVideoRegex.IsMatch(uri.AbsolutePath))
         {
             var json = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
-            return ParseJustTheGaysComWpJson(json, url);
+            var jsonPage = ParseJustTheGaysComWpJson(json, url);
+            _pageCache[url] = (jsonPage, DateTime.UtcNow.AddMinutes(10));
+            return jsonPage;
         }
 
         var comHtml = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
@@ -252,7 +262,9 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
                         var resolvedUrl = TryGetJsonString(doc.RootElement[0], "url");
                         if (!string.IsNullOrWhiteSpace(resolvedUrl) && !string.Equals(resolvedUrl, url, StringComparison.OrdinalIgnoreCase))
                         {
-                            return await InspectPageAsync(resolvedUrl, client, ct);
+                            var resolvedPage = await InspectPageAsync(resolvedUrl, client, ct);
+                            _pageCache[url] = (resolvedPage, DateTime.UtcNow.AddMinutes(10));
+                            return resolvedPage;
                         }
                     }
                 }
@@ -267,13 +279,22 @@ public sealed class JustTheGaysComDownloaderExtension : CoveExtensionBase, IDown
 
         var parsedCom = ParseJustTheGaysComHtml(comHtml, url, allowMissingMedia: true);
         if (!string.IsNullOrWhiteSpace(parsedCom.MediaUrl))
+        {
+            _pageCache[url] = (parsedCom, DateTime.UtcNow.AddMinutes(10));
+            if (!string.Equals(parsedCom.PageUrl, url, StringComparison.OrdinalIgnoreCase))
+                _pageCache[parsedCom.PageUrl] = (parsedCom, DateTime.UtcNow.AddMinutes(10));
             return parsedCom;
+        }
 
         var wpApiUrl = ExtractComWpJsonUrl(comHtml, url);
         if (!string.IsNullOrWhiteSpace(wpApiUrl))
         {
             var apiJson = await ScraperUtilities.FetchHtmlAsync(client, wpApiUrl, ct);
-            return MergeComHtmlAndWpJson(parsedCom, ParseJustTheGaysComWpJson(apiJson, url));
+            var merged = MergeComHtmlAndWpJson(parsedCom, ParseJustTheGaysComWpJson(apiJson, url));
+            _pageCache[url] = (merged, DateTime.UtcNow.AddMinutes(10));
+            if (!string.Equals(merged.PageUrl, url, StringComparison.OrdinalIgnoreCase))
+                _pageCache[merged.PageUrl] = (merged, DateTime.UtcNow.AddMinutes(10));
+            return merged;
         }
 
         throw new InvalidOperationException($"Could not locate a media stream on {url}");

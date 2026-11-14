@@ -47,7 +47,10 @@ public sealed class BoyfriendtvScraperTests
         <html>
         <body>
             <div class="video-item">
-                <a href="/videos/1426460/handsome-twink-audition/">Handsome Twink Audition | BoyFriendTV</a>
+                <a href="/videos/1426460/handsome-twink-audition/">
+                    <img src="https://cdn.boyfriendtv.com/thumbs/1426460.jpg" alt="Handsome Twink Audition" />
+                    Handsome Twink Audition | BoyFriendTV
+                </a>
             </div>
             <div class="video-item">
                 <a href="/videos/1500000/gym-buddies-workout/">Gym Buddies Workout - BoyFriendTV.com</a>
@@ -153,8 +156,32 @@ public sealed class BoyfriendtvScraperTests
         Assert.Equal(2, results.Count);
         Assert.Equal("Handsome Twink Audition", results[0].Title);
         Assert.Equal("1426460", results[0].Code);
+        Assert.Equal("https://cdn.boyfriendtv.com/thumbs/1426460.jpg", results[0].ImageUrl);
         Assert.Equal("Gym Buddies Workout", results[1].Title);
         Assert.Equal("1500000", results[1].Code);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_WhenUrlMissing_SearchesByTitleAndScrapesCandidate()
+    {
+        const string searchUrl = "https://www.boyfriendtv.com/search/videos/twink/";
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchUrl, VideoSearchHtml)
+            .MapHtml("https://www.boyfriendtv.com/videos/1426460/handsome-twink-audition/", VideoPageHtml);
+
+        var extension = new BoyfriendtvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                BoyfriendtvScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Title = "twink" },
+                new ScraperPermissions(["boyfriendtv.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Handsome Twink Audition", scraped.Title);
+        Assert.Equal("1426460", scraped.Code);
     }
 
     [Fact]

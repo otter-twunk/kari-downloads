@@ -71,8 +71,24 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
         "muscular", "onlyfans", "oral", "orgy", "otter", "outdoor", "public", "rough", "sensual",
         "sex", "shaved", "skinny", "slim", "smooth", "solo", "spanking", "straight", "thick",
         "threesome", "toys", "trailer", "twink", "uncut", "uncut cock", "verified-amateurs",
-        "video", "videos", "vr", "webcam", "white", "xxx", "young/twink"
+        "video", "videos", "vr", "webcam", "white", "xxx", "young/twink",
+        "bedroom", "shower", "bathroom", "kitchen", "hotel", "dorm", "office", "car", "beach",
+        "pool", "gym", "locker room", "sauna", "jacuzzi", "bed", "couch", "sofa", "full video",
+        "full", "scene", "preview", "teaser", "bonus", "behind the scenes", "bts", "leaked",
+        "exclusive", "asian", "latino", "black", "ebony", "arab", "brazilian", "french", "german",
+        "british", "spanish", "czech", "russian", "american", "italian", "blonde", "brunette",
+        "redhead", "ginger", "bald", "bearded", "mustache", "tattoo", "tattoos", "pierced",
+        "piercing", "top", "bottom", "versatile", "vers", "side", "dominant", "submissive",
+        "jock", "athlete", "military", "soldier", "uniform", "suit", "leather", "rubber",
+        "latex", "underwear", "boxers", "briefs", "jockstrap", "socks", "boots", "facial",
+        "swallow", "deepthroat", "rimming", "rimjob", "fisting", "poppers", "raw", "breeding",
+        "bukkake", "gangbang", "pov", "selfie", "audition", "casting", "interview", "strangers",
+        "cruising", "voyeur", "silver fox", "mature", "young", "college", "frat", "bro",
+        "roommate", "stranger"
     };
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
+        new(StringComparer.OrdinalIgnoreCase);
 
     private IServiceProvider? _services;
 
@@ -350,12 +366,15 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
 
     internal async Task<ResolvedMediaPage> InspectPageAsync(string url, HttpClient client, CancellationToken ct)
     {
+        if (_pageCache.TryGetValue(url, out var cached) && cached.Expiry > DateTime.UtcNow)
+            return cached.Page;
+
         var uri = new Uri(url);
 
         if (IsDirectMediaUrl(url))
         {
             var fallbackTitle = DownloaderUtilities.DeriveTitleFromUrl(url, DefaultStudioName);
-            return new ResolvedMediaPage(
+            var directResult = new ResolvedMediaPage(
                 PageUrl: url,
                 Title: fallbackTitle,
                 VideoMediaUrl: url,
@@ -366,12 +385,16 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
                 ImageUrl: null,
                 PerformerNames: [],
                 TagNames: []);
+            _pageCache[url] = (directResult, DateTime.UtcNow.AddMinutes(10));
+            return directResult;
         }
 
         if (WpJsonPostRegex.IsMatch(uri.AbsolutePath))
         {
             var json = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
-            return ParseGayFappyWpJson(json, url);
+            var jsonResult = ParseGayFappyWpJson(json, url);
+            _pageCache[url] = (jsonResult, DateTime.UtcNow.AddMinutes(10));
+            return jsonResult;
         }
 
         var html = await ScraperUtilities.FetchHtmlAsync(client, url, ct);
@@ -386,7 +409,11 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
                 try
                 {
                     var apiJson = await ScraperUtilities.FetchHtmlAsync(client, wpJsonUrl, ct);
-                    return MergeHtmlAndWpJson(parsedFromHtml, ParseGayFappyWpJson(apiJson, url));
+                    var merged = MergeHtmlAndWpJson(parsedFromHtml, ParseGayFappyWpJson(apiJson, url));
+                    _pageCache[url] = (merged, DateTime.UtcNow.AddMinutes(10));
+                    if (!string.Equals(merged.PageUrl, url, StringComparison.OrdinalIgnoreCase))
+                        _pageCache[merged.PageUrl] = (merged, DateTime.UtcNow.AddMinutes(10));
+                    return merged;
                 }
                 catch
                 {
@@ -395,10 +422,13 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
             }
         }
 
+        _pageCache[url] = (parsedFromHtml, DateTime.UtcNow.AddMinutes(10));
+        if (!string.Equals(parsedFromHtml.PageUrl, url, StringComparison.OrdinalIgnoreCase))
+            _pageCache[parsedFromHtml.PageUrl] = (parsedFromHtml, DateTime.UtcNow.AddMinutes(10));
         return parsedFromHtml;
     }
 
-    internal static ResolvedMediaPage ParseGayFappyHtml(string html, string pageUrl)
+    public static ResolvedMediaPage ParseGayFappyHtml(string html, string pageUrl)
     {
         var articleHtml = ExtractPrimaryArticleHtml(html);
 
@@ -708,11 +738,33 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
         if (string.IsNullOrWhiteSpace(tag))
             return false;
 
+        tag = tag.Trim();
+
         // Skip tags that look like pure numbers or too short
         if (tag.Length < 3 || tag.All(char.IsDigit))
             return false;
 
-        // Tags with spaces or hyphens usually indicate performer names in gayfappy
+        if (GenericCategoryTags.Contains(tag))
+            return false;
+
+        // Skip if contains digits or common non-name symbols
+        if (tag.Any(char.IsDigit) || tag.Contains('/') || tag.Contains('\\') || tag.Contains('#'))
+            return false;
+
+        // Words check
+        var words = tag.Split([' ', '-'], StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length is < 1 or > 4)
+            return false;
+
+        // Any word in generic tags?
+        if (words.Any(w => GenericCategoryTags.Contains(w)))
+            return false;
+
+        // Typically performer names are 2-3 words (First Last, First Middle Last),
+        // or a single distinct moniker (at least 4 chars)
+        if (words.Length == 1 && words[0].Length < 4)
+            return false;
+
         return true;
     }
 
@@ -938,7 +990,7 @@ public sealed class GayFappyDownloaderExtension : CoveExtensionBase, IDownloader
         return factory != null ? factory.CreateClient(VideoDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
-    internal sealed record ResolvedMediaPage(
+    public sealed record ResolvedMediaPage(
         string PageUrl,
         string Title,
         string? VideoMediaUrl,

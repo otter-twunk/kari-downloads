@@ -33,6 +33,10 @@ public sealed class ThisvidScraperTests
                   <span>Added:</span> 22 March 2021 by <a href="/members/111/">uploader</a>
                 </li>
                 <li>
+                  <span>Models:</span>
+                  <a href="/models/fixture-performer/">Fixture Performer</a>
+                </li>
+                <li>
                   <span>Categories:</span>
                   <a href="/categories/amateurs/">Amateurs</a>
                   <a href="/categories/anal/">Anal</a>
@@ -119,6 +123,7 @@ public sealed class ThisvidScraperTests
         Assert.Equal("Fixture ThisVid description paragraph.", scraped.Details);
         Assert.Equal("https://media.thisvid.com/contents/videos_screenshots/1000/1234/preview.jpg", scraped.ImageUrl);
         Assert.Equal("ThisVid", scraped.StudioName);
+        Assert.Contains("Fixture Performer", scraped.PerformerNames);
         Assert.Contains("Amateurs", scraped.TagNames);
         Assert.Contains("Anal", scraped.TagNames);
         Assert.Contains("Blonde", scraped.TagNames);
@@ -173,5 +178,28 @@ public sealed class ThisvidScraperTests
         Assert.Equal("Blonde Anal Scene", second.Title);
         Assert.Equal("4567890", second.Code);
         Assert.Equal("https://thisvid.com/videos/4567890/blonde-anal/", second.Urls[0]);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_WhenUrlMissing_SearchesByTitleAndScrapesCandidate()
+    {
+        const string searchUrl = "https://thisvid.com/search/?q=amateurs";
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchUrl, RealisticSearchHtml)
+            .MapHtml("https://thisvid.com/videos/3456789/amateur-fun/", RealisticThisvidHtml);
+
+        var extension = new ThisvidScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                ThisvidScraperExtension.PrimaryScraperId,
+                new VideoScrapeInput { Title = "amateurs" },
+                new ScraperPermissions(["thisvid.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Fixture ThisVid Scene", scraped.Title);
+        Assert.Equal("3456789", scraped.Code);
     }
 }

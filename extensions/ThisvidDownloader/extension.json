@@ -1,7 +1,7 @@
 {
   "id": "karinauts.downloaders.thisvid",
   "name": "ThisVid Downloader",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Downloads video media and inline metadata from thisvid.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",

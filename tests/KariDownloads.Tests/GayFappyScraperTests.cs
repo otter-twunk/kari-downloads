@@ -247,4 +247,29 @@ public sealed class GayFappyScraperTests
 
         Assert.NotEmpty(searchGalleries);
     }
+
+    [Fact]
+    public async Task ScrapeGalleryAsync_WhenUrlMissing_SearchesByTitleAndScrapesCandidate()
+    {
+        const string searchApiUrl = "https://gayfappy.com/index.php/wp-json/wp/v2/posts?search=blake&per_page=20";
+        const string pageUrl = "https://gayfappy.com/index.php/66189/tiktoker-blake-hoffman-jerks-off/";
+
+        using var harness = new FakeDownloaderHost()
+            .MapJson(searchApiUrl, SampleWpJsonSearch)
+            .MapHtml(pageUrl, SampleVideoHtml);
+
+        var extension = new GayFappyScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var gallery = await extension.ScrapeGalleryAsync(
+            new ScraperRequest<GalleryScrapeInput>(
+                GayFappyScraperExtension.PrimaryGalleryScraperId,
+                new GalleryScrapeInput { Title = "blake" },
+                new ScraperPermissions(["gayfappy.com"])),
+            CancellationToken.None);
+
+        Assert.NotNull(gallery);
+        Assert.Equal("Tiktoker blake hoffman jerks off", gallery.Title);
+        Assert.Equal("66189", gallery.Code);
+    }
 }

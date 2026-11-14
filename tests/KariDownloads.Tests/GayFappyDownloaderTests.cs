@@ -264,4 +264,34 @@ public sealed class GayFappyDownloaderTests
         Assert.NotNull(result);
         Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
     }
+
+    [Fact]
+    public void CategoryTags_AreNotMistakenForPerformers()
+    {
+        const string htmlWithTags = """
+            <!DOCTYPE html>
+            <html>
+            <body>
+                <span class="post-category">
+                    <a href="/category/hotel/">Hotel</a>
+                    <a href="/category/shower/">Shower</a>
+                </span>
+                <span class="post-tag">
+                    <a href="/tag/austin-wolf/">Austin Wolf</a>
+                    <a href="/tag/bedroom/">Bedroom</a>
+                    <a href="/tag/full-video/">Full Video</a>
+                </span>
+                <video src="https://gayfappy.com/video.mp4"></video>
+            </body>
+            </html>
+            """;
+
+        var parsed = GayFappyDownloaderExtension.ParseGayFappyHtml(htmlWithTags, "https://gayfappy.com/12345/scene/");
+
+        Assert.Contains("Austin Wolf", parsed.PerformerNames);
+        Assert.DoesNotContain("Hotel", parsed.PerformerNames);
+        Assert.DoesNotContain("Shower", parsed.PerformerNames);
+        Assert.DoesNotContain("Bedroom", parsed.PerformerNames);
+        Assert.DoesNotContain("Full Video", parsed.PerformerNames);
+    }
 }

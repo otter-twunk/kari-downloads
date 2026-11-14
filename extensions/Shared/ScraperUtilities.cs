@@ -20,6 +20,11 @@ internal static class ScraperUtilities
     private static readonly Regex JsonLdScriptRegex = new(
         @"<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(?<json>.*?)</script>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex MetaTagRegex = new(@"<meta\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex AttributeRegex = new(
+        @"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex TitleTagRegex = new(@"<title[^>]*>(.*?)</title>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex DefaultCodeRegex = new(@"\b([A-Z]{2,6}-\d{2,5})\b", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly SocketsHttpHandler FallbackSocketsHandler = new()
@@ -147,7 +152,7 @@ internal static class ScraperUtilities
 
     public static string? ExtractMetaContent(string html, string propertyName)
     {
-        foreach (Match metaTag in Regex.Matches(html, @"(?is)<meta\b[^>]*>"))
+        foreach (Match metaTag in MetaTagRegex.Matches(html))
         {
             var attributes = ParseAttributes(metaTag.Value);
             var property = attributes.GetValueOrDefault("property")
@@ -167,7 +172,7 @@ internal static class ScraperUtilities
     public static IReadOnlyList<string> ExtractAllMetaContent(string html, string propertyName)
     {
         var results = new List<string>();
-        foreach (Match metaTag in Regex.Matches(html, @"(?is)<meta\b[^>]*>"))
+        foreach (Match metaTag in MetaTagRegex.Matches(html))
         {
             var attributes = ParseAttributes(metaTag.Value);
             var property = attributes.GetValueOrDefault("property")
@@ -187,6 +192,7 @@ internal static class ScraperUtilities
 
     /// <summary>
     /// Extracts structured metadata combining JSON-LD (<c>application/ld+json</c>) and OpenGraph/meta fallbacks.
+    /// Uses a single-pass meta-tag cache for high performance.
     /// </summary>
     public static StructuredPageMetadata ExtractStructuredMetadata(string html, string? defaultStudioName = null)
     {
@@ -216,30 +222,58 @@ internal static class ScraperUtilities
             }
         }
 
-        title ??= ExtractMetaContent(html, "og:title")
-            ?? ExtractMetaContent(html, "twitter:title")
-            ?? CleanText(Regex.Match(html, @"(?is)<title[^>]*>(.*?)</title>").Groups[1].Value);
+        // Single-pass extraction of all meta tags
+        var metaMap = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (Match metaTag in MetaTagRegex.Matches(html))
+        {
+            var attributes = ParseAttributes(metaTag.Value);
+            var property = attributes.GetValueOrDefault("property")
+                ?? attributes.GetValueOrDefault("name")
+                ?? attributes.GetValueOrDefault("itemprop");
+            if (!string.IsNullOrWhiteSpace(property)
+                && attributes.TryGetValue("content", out var content)
+                && !string.IsNullOrWhiteSpace(content))
+            {
+                var cleaned = CleanText(content);
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                {
+                    if (!metaMap.TryGetValue(property, out var list))
+                    {
+                        list = new List<string>();
+                        metaMap[property] = list;
+                    }
+                    list.Add(cleaned);
+                }
+            }
+        }
 
-        description ??= ExtractMetaContent(html, "og:description")
-            ?? ExtractMetaContent(html, "description");
+        string? GetMeta(string name) => metaMap.TryGetValue(name, out var list) && list.Count > 0 ? list[0] : null;
+        IReadOnlyList<string> GetAllMeta(string name) => metaMap.TryGetValue(name, out var list) ? list : Array.Empty<string>();
+
+        title ??= GetMeta("og:title")
+            ?? GetMeta("twitter:title")
+            ?? CleanText(TitleTagRegex.Match(html).Groups[1].Value);
+
+        description ??= GetMeta("og:description")
+            ?? GetMeta("description");
 
         date ??= NormalizeIsoDate(
-            ExtractMetaContent(html, "video:release_date")
-            ?? ExtractMetaContent(html, "article:published_time")
-            ?? ExtractMetaContent(html, "datePublished"));
+            GetMeta("video:release_date")
+            ?? GetMeta("article:published_time")
+            ?? GetMeta("datePublished"));
 
-        imageUrl ??= ExtractMetaContent(html, "og:image")
-            ?? ExtractMetaContent(html, "twitter:image");
+        imageUrl ??= GetMeta("og:image")
+            ?? GetMeta("twitter:image");
 
-        studioName ??= ExtractMetaContent(html, "og:site_name") ?? defaultStudioName;
+        studioName ??= GetMeta("og:site_name") ?? defaultStudioName;
 
-        foreach (var metaActor in ExtractAllMetaContent(html, "video:actor"))
+        foreach (var metaActor in GetAllMeta("video:actor"))
             performers.Add(metaActor);
 
-        foreach (var metaTag in ExtractAllMetaContent(html, "video:tag"))
+        foreach (var metaTag in GetAllMeta("video:tag"))
             tags.Add(metaTag);
 
-        var keywordsMeta = ExtractMetaContent(html, "keywords");
+        var keywordsMeta = GetMeta("keywords");
         if (!string.IsNullOrWhiteSpace(keywordsMeta))
         {
             foreach (var kw in keywordsMeta.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -376,7 +410,7 @@ internal static class ScraperUtilities
     private static Dictionary<string, string> ParseAttributes(string tag)
     {
         var attributes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match attribute in Regex.Matches(tag, @"(?is)([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))"))
+        foreach (Match attribute in AttributeRegex.Matches(tag))
         {
             attributes[attribute.Groups[1].Value] = attribute.Groups[3].Success
                 ? attribute.Groups[3].Value

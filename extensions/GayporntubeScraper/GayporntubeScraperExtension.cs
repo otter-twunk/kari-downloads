@@ -85,7 +85,35 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
     {
         var rawUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedUrl(rawUrl))
+        {
+            var fallbackTitle = request.Input.Title?.Trim();
+            if (!string.IsNullOrWhiteSpace(fallbackTitle) && !fallbackTitle.Equals("Untitled", StringComparison.OrdinalIgnoreCase))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(PrimaryScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         var targetUrl = ToCanonicalVideoUrl(rawUrl!) ?? rawUrl!;
         var client = CreateHttpClient();
@@ -227,6 +255,13 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
         if (!string.IsNullOrWhiteSpace(originalUrl) && !urls.Contains(originalUrl, StringComparer.OrdinalIgnoreCase))
             urls.Add(originalUrl);
 
+        var performers = new List<string>(structured.PerformerNames);
+        foreach (var p in ExtractPerformers(html))
+        {
+            if (!performers.Contains(p, StringComparer.OrdinalIgnoreCase))
+                performers.Add(p);
+        }
+
         return new ScrapedVideoDto
         {
             SourceScraperId = PrimaryScraperId,
@@ -238,9 +273,29 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
             ImageUrl = structured.ImageUrl,
             Urls = urls,
             StudioName = DefaultStudioName,
-            PerformerNames = structured.PerformerNames.ToList(),
+            PerformerNames = performers,
             TagNames = tags
         };
+    }
+
+    internal static List<string> ExtractPerformers(string html)
+    {
+        var performers = new List<string>();
+        foreach (Match meta in Regex.Matches(html, @"(?is)<meta\b[^>]*property=['""]video:actor['""][^>]*content=['""](?<name>[^'""]+)['""]"))
+        {
+            var name = ScraperUtilities.CleanText(meta.Groups["name"].Value);
+            if (!string.IsNullOrWhiteSpace(name))
+                performers.Add(name);
+        }
+
+        foreach (Match anchor in Regex.Matches(html, @"(?is)<a\b[^>]*href=['""][^'""]*/(?:models|pornstars|actors)/[^/'""]+/?['""][^>]*>(?<name>[^<]+)</a>"))
+        {
+            var name = ScraperUtilities.CleanText(anchor.Groups["name"].Value);
+            if (!string.IsNullOrWhiteSpace(name) && !name.Equals("Models", StringComparison.OrdinalIgnoreCase) && !name.Equals("PornStars", StringComparison.OrdinalIgnoreCase))
+                performers.Add(name);
+        }
+
+        return ScraperUtilities.DeduplicateStrings(performers);
     }
 
     public static IReadOnlyList<ScrapedVideoDto> ParseSearchResultsHtml(string html, string baseSearchUrl)
@@ -265,12 +320,22 @@ public sealed class GayporntubeScraperExtension : CoveExtensionBase, IScraperPro
             var idMatch = VideoIdRegex.Match(fullUrl);
             var code = idMatch.Success ? idMatch.Groups["id"].Value : null;
 
+            string? imageUrl = null;
+            if (!string.IsNullOrWhiteSpace(code))
+            {
+                var imgRegex = new Regex($@"(?is)<img\b[^>]*data-(?:webp|src)=['""](?<url>[^'""]*{code}[^'""]*)['""]");
+                var m = imgRegex.Match(html);
+                if (m.Success && Uri.TryCreate(baseUri, m.Groups["url"].Value.Trim(), out var imgUri))
+                    imageUrl = imgUri.ToString();
+            }
+
             results.Add(new ScrapedVideoDto
             {
                 SourceScraperId = PrimaryScraperId,
                 Title = title,
                 Code = code,
                 Urls = [fullUrl],
+                ImageUrl = imageUrl,
                 StudioName = DefaultStudioName
             });
         }

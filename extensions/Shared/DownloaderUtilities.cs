@@ -23,6 +23,7 @@ internal static class DownloaderUtilities
     private static readonly Regex JsonLdScriptRegex = new(
         @"<script\b[^>]*type\s*=\s*['""]application/ld\+json['""][^>]*>(?<json>.*?)</script>",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+    private static readonly Regex MetaTagRegex = new(@"<meta\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex AttributeRegex = new(
         @"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
@@ -101,13 +102,15 @@ internal static class DownloaderUtilities
         return string.IsNullOrWhiteSpace(cleaned) ? fallback : cleaned;
     }
 
+    private static readonly char[] AdditionalInvalidChars = [':', '*', '?', '"', '<', '>', '|', '\\'];
+
     public static string SanitizeFileName(string name, string fallback = "downloaded")
     {
         if (string.IsNullOrWhiteSpace(name))
             return fallback;
 
         var invalid = Path.GetInvalidFileNameChars();
-        var sanitized = new string(name.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray()).Trim().Trim('.');
+        var sanitized = new string(name.Select(ch => invalid.Contains(ch) || AdditionalInvalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim().Trim('.');
         return string.IsNullOrWhiteSpace(sanitized) ? fallback : sanitized;
     }
 
@@ -139,7 +142,7 @@ internal static class DownloaderUtilities
 
     public static string? ExtractMetaContent(string html, string propertyName)
     {
-        foreach (Match metaTag in Regex.Matches(html, @"(?is)<meta\b[^>]*>"))
+        foreach (Match metaTag in MetaTagRegex.Matches(html))
         {
             var attributes = ParseAttributes(metaTag.Value);
             var property = attributes.GetValueOrDefault("property")
@@ -338,26 +341,50 @@ internal static class DownloaderUtilities
                         var itemFileName = $"{index + 1:D3}{ext}";
                         var itemPath = Path.Combine(stagingDir, itemFileName);
 
-                        using var request = new HttpRequestMessage(HttpMethod.Get, imageUrl);
-                        request.Headers.UserAgent.TryParseAdd(DefaultUserAgent);
-                        if (headers != null)
+                        // Retry up to 3 times per image
+                        Exception? lastEx = null;
+                        var succeeded = false;
+                        for (var attempt = 1; attempt <= 3; attempt++)
                         {
-                            foreach (var (key, value) in headers)
-                                request.Headers.TryAddWithoutValidation(key, value);
+                            ct.ThrowIfCancellationRequested();
+                            if (attempt > 1)
+                            {
+                                await Task.Delay(300 * (1 << (attempt - 1)), ct);
+                            }
+
+                            try
+                            {
+                                using var request = new HttpRequestMessage(HttpMethod.Get, imageUrl);
+                                request.Headers.UserAgent.TryParseAdd(DefaultUserAgent);
+                                if (headers != null)
+                                {
+                                    foreach (var (key, value) in headers)
+                                        request.Headers.TryAddWithoutValidation(key, value);
+                                }
+
+                                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                                response.EnsureSuccessStatusCode();
+
+                                await using var input = await response.Content.ReadAsStreamAsync(ct);
+                                await using var output = new FileStream(
+                                    itemPath,
+                                    FileMode.Create,
+                                    FileAccess.Write,
+                                    FileShare.None,
+                                    bufferSize: 64 * 1024,
+                                    useAsync: true);
+                                await input.CopyToAsync(output, ct);
+                                succeeded = true;
+                                break;
+                            }
+                            catch (Exception ex) when (ex is HttpRequestException or IOException)
+                            {
+                                lastEx = ex;
+                            }
                         }
 
-                        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
-                        response.EnsureSuccessStatusCode();
-
-                        await using var input = await response.Content.ReadAsStreamAsync(ct);
-                        await using var output = new FileStream(
-                            itemPath,
-                            FileMode.Create,
-                            FileAccess.Write,
-                            FileShare.None,
-                            bufferSize: 64 * 1024,
-                            useAsync: true);
-                        await input.CopyToAsync(output, ct);
+                        if (!succeeded)
+                            throw new InvalidOperationException($"Failed to download gallery image #{index + 1} from {imageUrl}: {lastEx?.Message}", lastEx);
 
                         var done = Interlocked.Increment(ref completed);
                         var progress = 10.0 + (80.0 * done / imageUrls.Count);

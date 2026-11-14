@@ -102,7 +102,35 @@ public sealed class JustTheGaysTvScraperExtension : CoveExtensionBase, IScraperP
     {
         var sourceUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedVideoUrl(sourceUrl))
+        {
+            var fallbackTitle = CleanTvTitle(request.Input.Title ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(fallbackTitle) && !fallbackTitle.Equals("Untitled", StringComparison.OrdinalIgnoreCase))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(VideoScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         var normalizedUrl = NormalizeVideoUrl(sourceUrl!);
         if (_videoCache.TryGetValue(normalizedUrl, out var entry) && entry.Expiry > DateTime.UtcNow)

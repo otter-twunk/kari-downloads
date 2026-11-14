@@ -45,6 +45,10 @@ public sealed class ThisvidDownloaderTests
                   <span>Added:</span> 22 March 2021 by <a href="/members/111/">uploader</a>
                 </li>
                 <li>
+                  <span>Models:</span>
+                  <a href="/models/fixture-performer/">Fixture Performer</a>
+                </li>
+                <li>
                   <span>Categories:</span>
                   <a href="/categories/amateurs/">Amateurs</a>
                   <a href="/categories/anal/">Anal</a>
@@ -156,6 +160,7 @@ public sealed class ThisvidDownloaderTests
         Assert.Equal("Fixture ThisVid description paragraph.", meta.Details);
         Assert.Equal("https://media.thisvid.com/contents/videos_screenshots/1000/1234/preview.jpg", meta.ImageUrl);
         Assert.Equal("ThisVid", meta.StudioName);
+        Assert.Contains("Fixture Performer", meta.PerformerNames);
         Assert.Contains("Amateurs", meta.TagNames);
         Assert.Contains("Anal", meta.TagNames);
         Assert.Contains("Blonde", meta.TagNames);

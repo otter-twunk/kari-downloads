@@ -483,7 +483,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             imageUrl = $"https://static.jtg.network/thumbnails/{imageUrl.TrimStart('/')}";
 
         var code = ExtractTvCode(pageUrl);
-        var qualityOptions = BuildTvQualityOptions(has720P, has1080P);
+        var qualityOptions = IsHlsUrl(mediaUrl) ? BuildTvQualityOptions(has720P, has1080P) : null;
 
         return new ResolvedMediaPage(
             PageUrl: pageUrl,
@@ -574,7 +574,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardError = true,
-                RedirectStandardOutput = true
+                RedirectStandardOutput = false
             };
 
             psi.ArgumentList.Add("-y");
@@ -649,12 +649,29 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                 }
             }, ct);
 
-            await process.WaitForExitAsync(ct);
-            await readErrorTask;
+            try
+            {
+                await process.WaitForExitAsync(ct);
+                await readErrorTask;
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch { /* best effort cleanup */ }
+                throw;
+            }
 
             return process.ExitCode == 0
                 && File.Exists(outputMp4Path)
                 && new FileInfo(outputMp4Path).Length > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -1058,6 +1075,15 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             if (bwMatch.Success && long.TryParse(bwMatch.Groups["bw"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedBw))
                 bandwidth = parsedBw;
 
+            if (height == 0 && bandwidth > 0)
+            {
+                // Fallback estimate height from bandwidth if resolution tag is omitted
+                if (bandwidth >= 4_000_000) height = 1080;
+                else if (bandwidth >= 2_000_000) height = 720;
+                else if (bandwidth >= 1_000_000) height = 480;
+                else height = 360;
+            }
+
             variants.Add((height, bandwidth, resolvedUri.ToString()));
         }
 
@@ -1140,7 +1166,7 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardError = true,
-                    RedirectStandardOutput = true
+                    RedirectStandardOutput = false
                 }
             };
 
@@ -1162,10 +1188,31 @@ public sealed class JustTheGaysTvDownloaderExtension : CoveExtensionBase, IDownl
             if (!process.Start())
                 return false;
 
-            await process.WaitForExitAsync(ct);
+            var errorDrain = process.StandardError.ReadToEndAsync(ct);
+
+            try
+            {
+                await process.WaitForExitAsync(ct);
+                await errorDrain;
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch { /* best effort cleanup */ }
+                throw;
+            }
+
             return process.ExitCode == 0
                 && File.Exists(outputMp4Path)
                 && new FileInfo(outputMp4Path).Length > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {

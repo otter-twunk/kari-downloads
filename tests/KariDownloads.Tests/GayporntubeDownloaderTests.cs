@@ -163,4 +163,61 @@ public sealed class GayporntubeDownloaderTests
         Assert.Contains("Frat Guys", resolved.TagNames);
         Assert.Contains("Muscle Boys", resolved.TagNames);
     }
+
+    [Fact]
+    public async Task MatchAsync_DiscoversMultiQualityOptions_WhenMultipleSourcesPresent()
+    {
+        const string pageUrl = "https://www.gayporntube.com/video/2144881/multi-quality";
+        const string htmlWithSources = """
+            <!DOCTYPE html>
+            <html>
+            <head><title>Multi Quality | GayPornTube</title></head>
+            <body>
+                <video>
+                    <source src="https://static.gayporntube.com/video_1080p.mp4" title="1080p" />
+                    <source src="https://static.gayporntube.com/video_720p.mp4" title="720p" />
+                </video>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithSources);
+
+        var extension = new GayporntubeDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var match = await extension.MatchAsync(pageUrl, CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.NotNull(match.QualityOptions);
+        Assert.Equal(2, match.QualityOptions.Count);
+        Assert.Contains(match.QualityOptions, q => q.Id == "1080p" && q.Height == 1080);
+        Assert.Contains(match.QualityOptions, q => q.Id == "720p" && q.Height == 720);
+    }
+
+    [Fact]
+    public void ParsePage_ExtractsPerformersFromActorsAndModels()
+    {
+        const string htmlWithActors = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Hot Action | GayPornTube</title>
+                <meta property="video:actor" content="Austin Wolf" />
+            </head>
+            <body>
+                <div class="video-info">
+                    <a href="https://www.gayporntube.com/models/sean-cody/">Sean Cody</a>
+                </div>
+                <video src="https://static.gayporntube.com/video.mp4"></video>
+            </body>
+            </html>
+            """;
+
+        var parsed = GayporntubeDownloaderExtension.ParsePage(htmlWithActors, "https://www.gayporntube.com/video/1111/hot-action");
+
+        Assert.Contains("Austin Wolf", parsed.PerformerNames);
+        Assert.Contains("Sean Cody", parsed.PerformerNames);
+    }
 }

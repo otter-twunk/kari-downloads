@@ -55,7 +55,20 @@ public sealed class GayFappyScraperExtension : CoveExtensionBase, IScraperProvid
         "muscular", "onlyfans", "oral", "orgy", "otter", "outdoor", "public", "rough", "sensual",
         "sex", "shaved", "skinny", "slim", "smooth", "solo", "spanking", "straight", "thick",
         "threesome", "toys", "trailer", "twink", "uncut", "uncut cock", "verified-amateurs",
-        "video", "videos", "vr", "webcam", "white", "xxx", "young/twink"
+        "video", "videos", "vr", "webcam", "white", "xxx", "young/twink",
+        "bedroom", "shower", "bathroom", "kitchen", "hotel", "dorm", "office", "car", "beach",
+        "pool", "gym", "locker room", "sauna", "jacuzzi", "bed", "couch", "sofa", "full video",
+        "full", "scene", "preview", "teaser", "bonus", "behind the scenes", "bts", "leaked",
+        "exclusive", "asian", "latino", "black", "ebony", "arab", "brazilian", "french", "german",
+        "british", "spanish", "czech", "russian", "american", "italian", "blonde", "brunette",
+        "redhead", "ginger", "bald", "bearded", "mustache", "tattoo", "tattoos", "pierced",
+        "piercing", "top", "bottom", "versatile", "vers", "side", "dominant", "submissive",
+        "jock", "athlete", "military", "soldier", "uniform", "suit", "leather", "rubber",
+        "latex", "underwear", "boxers", "briefs", "jockstrap", "socks", "boots", "facial",
+        "swallow", "deepthroat", "rimming", "rimjob", "fisting", "poppers", "raw", "breeding",
+        "bukkake", "gangbang", "pov", "selfie", "audition", "casting", "interview", "strangers",
+        "cruising", "voyeur", "silver fox", "mature", "young", "college", "frat", "bro",
+        "roommate", "stranger"
     };
 
     private IServiceProvider? _services;
@@ -218,10 +231,19 @@ public sealed class GayFappyScraperExtension : CoveExtensionBase, IScraperProvid
         var client = CreateHttpClient();
         var normalizedUrl = NormalizeUrl(sourceUrl!);
 
+        var videoInput = new VideoScrapeInput
+        {
+            Url = normalizedUrl,
+            Title = request.Input.Title,
+            Code = request.Input.Code,
+            Date = request.Input.Date,
+            Details = request.Input.Details
+        };
+
         if (Uri.TryCreate(normalizedUrl, UriKind.Absolute, out var uri) && WpJsonPostRegex.IsMatch(uri.AbsolutePath))
         {
             var json = await ScraperUtilities.FetchHtmlAsync(client, normalizedUrl, ct);
-            var videoDto = ParseVideoWpJson(json, normalizedUrl, null);
+            var videoDto = ParseVideoWpJson(json, normalizedUrl, videoInput);
             return new ScrapedGalleryDto
             {
                 Title = videoDto.Title,
@@ -237,7 +259,25 @@ public sealed class GayFappyScraperExtension : CoveExtensionBase, IScraperProvid
         }
 
         var html = await ScraperUtilities.FetchHtmlAsync(client, normalizedUrl, ct);
-        var parsedVideo = ParseVideoHtml(html, normalizedUrl, null);
+        var parsedVideo = ParseVideoHtml(html, normalizedUrl, videoInput);
+
+        if (parsedVideo.PerformerNames.Count == 0 || parsedVideo.TagNames.Count == 0)
+        {
+            var wpJsonUrl = ExtractWpJsonUrl(html, normalizedUrl);
+            if (!string.IsNullOrWhiteSpace(wpJsonUrl))
+            {
+                try
+                {
+                    var apiJson = await ScraperUtilities.FetchHtmlAsync(client, wpJsonUrl, ct);
+                    var parsedFromApi = ParseVideoWpJson(apiJson, normalizedUrl, videoInput);
+                    parsedVideo = MergeVideoResults(parsedVideo, parsedFromApi);
+                }
+                catch
+                {
+                    // Fall back to html result
+                }
+            }
+        }
 
         return new ScrapedGalleryDto
         {
@@ -663,7 +703,25 @@ public sealed class GayFappyScraperExtension : CoveExtensionBase, IScraperProvid
         if (string.IsNullOrWhiteSpace(tag))
             return false;
 
+        tag = tag.Trim();
+
         if (tag.Length < 3 || tag.All(char.IsDigit))
+            return false;
+
+        if (GenericCategoryTags.Contains(tag))
+            return false;
+
+        if (tag.Any(char.IsDigit) || tag.Contains('/') || tag.Contains('\\') || tag.Contains('#'))
+            return false;
+
+        var words = tag.Split([' ', '-'], StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length is < 1 or > 4)
+            return false;
+
+        if (words.Any(w => GenericCategoryTags.Contains(w)))
+            return false;
+
+        if (words.Length == 1 && words[0].Length < 4)
             return false;
 
         return true;

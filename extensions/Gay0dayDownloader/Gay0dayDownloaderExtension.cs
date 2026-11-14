@@ -20,6 +20,9 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
     private static readonly Regex TagsBlockRegex = new(@"Tags:\s*(?<tags>.*?)(?:</div>|Models:|Sponsored by:)", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
     private static readonly Regex AnchorTextRegex = new(@"<a\b[^>]*>(?<text>.*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private IServiceProvider? _services;
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
@@ -27,7 +30,7 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
         "Gay0day Downloader",
         DownloaderEntity.Video,
         ["https://gay0day.com/*", "https://*.gay0day.com/*"],
-        DownloaderCapabilities.InlineMetadata);
+        DownloaderCapabilities.InlineMetadata | DownloaderCapabilities.MultiQuality);
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
@@ -46,11 +49,17 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
         if (!IsSupportedUrl(url))
             return null;
 
-        var pageInfo = await TryInspectPageAsync(url, ct);
+        var pageInfo = await TryInspectPageAsync(url, host: null, ct);
+        var qualityOptions = pageInfo?.Streams
+            .Where(s => !string.IsNullOrWhiteSpace(s.QualityId))
+            .Select(s => new DownloaderQualityOption(s.QualityId, s.Height != null ? $"{s.Height}p" : s.QualityId) { Height = s.Height })
+            .DistinctBy(q => q.Id)
+            .ToList();
+
         return new DownloaderUrlMatch(
             PrimaryDescriptor.Id,
             url,
-            QualityOptions: null,
+            QualityOptions: qualityOptions is { Count: > 0 } ? qualityOptions : null,
             Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(url, "Gay0day Downloader"));
     }
 
@@ -66,16 +75,19 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
             throw new InvalidOperationException($"Unsupported URL for Gay0day Downloader: {request.Url}");
 
         host.ReportProgress(5.0, "Inspecting media page...");
-        var pageInfo = await InspectPageAsync(request.Url, ct);
+        var pageInfo = await InspectPageAsync(request.Url, host, ct);
+
+        var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
+            ?? throw new InvalidOperationException($"Could not locate a suitable video stream for {request.Url}");
 
         host.ReportProgress(10.0, "Starting media stream download...");
-        var extension = DownloaderUtilities.EnsureExtensionFromUrl(pageInfo.MediaUrl.TrimEnd('/'), ".mp4");
+        var extension = DownloaderUtilities.EnsureExtensionFromUrl(selectedStream.VideoUrl.TrimEnd('/'), ".mp4");
         var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title) + extension;
         var localFileName = "downloaded" + extension;
 
         var localPath = await DownloaderUtilities.DownloadToTempFileAsync(
             CreateHttpClient(host),
-            pageInfo.MediaUrl,
+            selectedStream.VideoUrl,
             host,
             localFileName,
             ct);
@@ -104,11 +116,11 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
             && DownloaderUtilities.IsAnyHost(url, SupportedDomains);
     }
 
-    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
         try
         {
-            return await InspectPageAsync(url, ct);
+            return await InspectPageAsync(url, host, ct);
         }
         catch
         {
@@ -116,22 +128,28 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
         }
     }
 
-    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
+        if (_pageCache.TryGetValue(url, out var entry) && entry.Expiry > DateTime.UtcNow)
+            return entry.Page;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
 
-        using var response = await CreateHttpClient().SendAsync(request, ct);
+        using var response = await CreateHttpClient(host).SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
 
         var html = await response.Content.ReadAsStringAsync(ct);
-        return ParsePage(html, url);
+        var parsed = ParsePage(html, url);
+        _pageCache[url] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        return parsed;
     }
 
     internal static ResolvedMediaPage ParsePage(string html, string url)
     {
-        var mediaUrl = ExtractMediaUrl(html, url)
-            ?? throw new InvalidOperationException($"Could not locate a direct media stream on {url}");
+        var streams = ExtractMediaStreams(html, url);
+        if (streams.Count == 0)
+            throw new InvalidOperationException($"Could not locate a direct media stream on {url}");
 
         var fallbackTitle = DownloaderUtilities.DeriveTitleFromUrl(url, "Gay0day Video");
         var rawTitle = DownloaderUtilities.ExtractFirstMatch(html, @"(?is)<div\b[^>]*class\s*=\s*['""][^'""]*\bheadline\b[^'""]*['""][^>]*>\s*<h1[^>]*>(.*?)</h1>")
@@ -139,7 +157,7 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
             ?? DownloaderUtilities.ExtractMetaContent(html, "og:title")
             ?? DownloaderUtilities.ExtractHtmlTitle(html);
 
-        var title = DownloaderUtilities.SanitizeFileName(rawTitle ?? fallbackTitle, fallbackTitle);
+        var title = ScraperUtilities.CleanText(rawTitle) ?? fallbackTitle;
         if (title.EndsWith(" @ Gay0Day", StringComparison.OrdinalIgnoreCase))
             title = title[..^10].Trim();
 
@@ -195,7 +213,7 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
             PageUrl: url,
             Title: title,
             Code: code,
-            MediaUrl: mediaUrl,
+            Streams: streams,
             Description: description,
             Date: date,
             ImageUrl: imageUrl,
@@ -323,27 +341,28 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
         return ScraperUtilities.DeduplicateStrings(tags);
     }
 
-    internal static string? ExtractMediaUrl(string html, string pageUrl)
+    internal static List<MediaStream> ExtractMediaStreams(string html, string pageUrl)
     {
-        // 1. <video ...> <source src="..." type="video/mp4" /> </video>
-        var sourceMatch = Regex.Match(html, @"(?is)<video\b[^>]*>.*?<source\b[^>]*\bsrc\s*=\s*['""](?<url>[^'""]+)['""]");
-        if (sourceMatch.Success)
+        var streams = new List<MediaStream>();
+        var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Check all <source> tags with src and optional title/label/res
+        foreach (Match match in Regex.Matches(html, @"(?is)<source\b[^>]*\bsrc\s*=\s*['""](?<url>[^'""]+)['""][^>]*>"))
         {
-            var raw = sourceMatch.Groups["url"].Value.Trim();
-            if (ResolveUrl(raw, pageUrl) is { } resolved)
-                return resolved;
+            var raw = match.Groups["url"].Value.Trim();
+            var resolved = ResolveUrl(raw, pageUrl);
+            if (!string.IsNullOrWhiteSpace(resolved) && seenUrls.Add(resolved))
+            {
+                var tag = match.Value;
+                var resMatch = Regex.Match(tag, @"(?:title|label|res|size)\s*=\s*['""](?<q>[^'""]+)['""]", RegexOptions.IgnoreCase);
+                var qStr = resMatch.Success ? resMatch.Groups["q"].Value.Trim() : null;
+                var height = ParseHeight(qStr ?? resolved);
+                var qId = qStr ?? (height != null ? $"{height}p" : "default");
+                streams.Add(new MediaStream(resolved, qId, height, streams.Count == 0));
+            }
         }
 
-        // 2. Generic <source src="..." />
-        var directSource = Regex.Match(html, @"(?is)<source\b[^>]*\bsrc\s*=\s*['""](?<url>[^'""]+)['""][^>]*type\s*=\s*['""]video/mp4['""]");
-        if (directSource.Success)
-        {
-            var raw = directSource.Groups["url"].Value.Trim();
-            if (ResolveUrl(raw, pageUrl) is { } resolved)
-                return resolved;
-        }
-
-        // 3. JSON-LD contentUrl
+        // 2. Check JSON-LD contentUrl
         foreach (var doc in DownloaderUtilities.ExtractJsonLdBlocks(html))
         {
             using (doc)
@@ -352,26 +371,88 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
                 if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("contentUrl", out var contentUrlProp) && contentUrlProp.ValueKind == JsonValueKind.String)
                 {
                     var raw = contentUrlProp.GetString()?.Trim();
-                    if (!string.IsNullOrWhiteSpace(raw) && ResolveUrl(raw, pageUrl) is { } resolved)
-                        return resolved;
+                    var resolved = ResolveUrl(raw ?? "", pageUrl);
+                    if (!string.IsNullOrWhiteSpace(resolved) && seenUrls.Add(resolved))
+                    {
+                        var height = ParseHeight(resolved);
+                        streams.Add(new MediaStream(resolved, height != null ? $"{height}p" : "default", height, streams.Count == 0));
+                    }
                 }
             }
         }
 
-        // 4. OpenGraph video meta
+        // 3. OpenGraph video meta
         var candidate = DownloaderUtilities.ExtractMetaContent(html, "og:video:secure_url")
             ?? DownloaderUtilities.ExtractMetaContent(html, "og:video:url")
             ?? DownloaderUtilities.ExtractMetaContent(html, "og:video");
 
-        if (!string.IsNullOrWhiteSpace(candidate) && ResolveUrl(candidate, pageUrl) is { } ogResolved)
-            return ogResolved;
+        if (!string.IsNullOrWhiteSpace(candidate))
+        {
+            var resolved = ResolveUrl(candidate, pageUrl);
+            if (!string.IsNullOrWhiteSpace(resolved) && seenUrls.Add(resolved))
+            {
+                var height = ParseHeight(resolved);
+                streams.Add(new MediaStream(resolved, height != null ? $"{height}p" : "default", height, streams.Count == 0));
+            }
+        }
 
-        // 5. Raw mp4 stream link
+        // 4. Raw mp4 stream link
         var rawMatch = Regex.Match(html, @"(?is)(https?://[^'""<>\s]+\.(?:mp4|m4v)(?:[/?][^'""<>\s]*)?)");
-        if (rawMatch.Success && ResolveUrl(rawMatch.Value, pageUrl) is { } linkResolved)
-            return linkResolved;
+        if (rawMatch.Success)
+        {
+            var resolved = ResolveUrl(rawMatch.Value, pageUrl);
+            if (!string.IsNullOrWhiteSpace(resolved) && seenUrls.Add(resolved))
+            {
+                var height = ParseHeight(resolved);
+                streams.Add(new MediaStream(resolved, height != null ? $"{height}p" : "default", height, streams.Count == 0));
+            }
+        }
+
+        return streams;
+    }
+
+    internal static MediaStream? SelectStream(IReadOnlyList<MediaStream> streams, string? requestedQualityId, int? maxHeight)
+    {
+        if (streams.Count == 0)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(requestedQualityId))
+        {
+            var match = streams.FirstOrDefault(s => string.Equals(s.QualityId, requestedQualityId, StringComparison.OrdinalIgnoreCase));
+            if (match != null)
+                return match;
+        }
+
+        var candidates = streams.AsEnumerable();
+        if (maxHeight is > 0)
+        {
+            var withinLimit = candidates.Where(s => s.Height == null || s.Height <= maxHeight.Value).ToList();
+            if (withinLimit.Count > 0)
+                candidates = withinLimit;
+        }
+
+        return candidates
+            .OrderByDescending(s => s.Height ?? 0)
+            .ThenByDescending(s => s.IsDefault)
+            .FirstOrDefault();
+    }
+
+    private static int? ParseHeight(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+
+        var numMatch = Regex.Match(text, @"(\d{3,4})p?", RegexOptions.IgnoreCase);
+        if (numMatch.Success && int.TryParse(numMatch.Groups[1].Value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var h))
+            return h;
 
         return null;
+    }
+
+    internal static string? ExtractMediaUrl(string html, string pageUrl)
+    {
+        var streams = ExtractMediaStreams(html, pageUrl);
+        return streams.FirstOrDefault()?.VideoUrl;
     }
 
     private static string? ResolveUrl(string candidate, string pageUrl)
@@ -397,15 +478,24 @@ public sealed class Gay0dayDownloaderExtension : CoveExtensionBase, IDownloaderP
         return factory != null ? factory.CreateClient(PrimaryDownloaderId) : DownloaderUtilities.CreateFallbackHttpClient();
     }
 
+    internal sealed record MediaStream(
+        string VideoUrl,
+        string QualityId,
+        int? Height,
+        bool IsDefault);
+
     internal sealed record ResolvedMediaPage(
         string PageUrl,
         string Title,
         string? Code,
-        string MediaUrl,
+        List<MediaStream> Streams,
         string? Description,
         string? Date,
         string? ImageUrl,
         string? StudioName,
         List<string> PerformerNames,
-        List<string> TagNames);
+        List<string> TagNames)
+    {
+        public string MediaUrl => Streams.FirstOrDefault()?.VideoUrl ?? string.Empty;
+    }
 }

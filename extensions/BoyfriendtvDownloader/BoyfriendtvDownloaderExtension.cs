@@ -40,6 +40,9 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         @"\s*(?:\||-)\s*BoyFriendTV(?:\.com)?\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private IServiceProvider? _services;
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
@@ -66,9 +69,9 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         if (!IsSupportedUrl(url))
             return null;
 
-        var pageInfo = await TryInspectPageAsync(url, ct);
+        var pageInfo = await TryInspectPageAsync(url, host: null, ct);
         var qualityOptions = pageInfo?.Streams
-            .Where(s => !string.IsNullOrWhiteSpace(s.QualityId))
+            .Where(s => !string.IsNullOrWhiteSpace(s.QualityId) && s.Format.Equals("mp4", StringComparison.OrdinalIgnoreCase))
             .Select(s => new DownloaderQualityOption(s.QualityId, s.Height != null ? $"{s.Height}p" : s.QualityId) { Height = s.Height })
             .DistinctBy(q => q.Id)
             .ToList();
@@ -92,7 +95,7 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             throw new InvalidOperationException($"Unsupported URL for BoyfriendTV Downloader: {request.Url}");
 
         host.ReportProgress(5.0, "Inspecting BoyfriendTV media page...");
-        var pageInfo = await InspectPageAsync(request.Url, ct);
+        var pageInfo = await InspectPageAsync(request.Url, host, ct);
 
         var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
             ?? throw new InvalidOperationException($"Could not resolve a suitable video stream for {request.Url}");
@@ -131,11 +134,11 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             && DownloaderUtilities.IsAnyHost(url, SupportedDomains);
     }
 
-    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
         try
         {
-            return await InspectPageAsync(url, ct);
+            return await InspectPageAsync(url, host, ct);
         }
         catch
         {
@@ -143,19 +146,24 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         }
     }
 
-    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
+        if (_pageCache.TryGetValue(url, out var entry) && entry.Expiry > DateTime.UtcNow)
+            return entry.Page;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
         request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
         request.Headers.TryAddWithoutValidation("Cookie", "age_verified=1");
         request.Headers.Referrer = new Uri("https://www.boyfriendtv.com/");
 
-        using var response = await CreateHttpClient().SendAsync(request, ct);
+        using var response = await CreateHttpClient(host).SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
 
         var html = await response.Content.ReadAsStringAsync(ct);
-        return ParsePage(html, url);
+        var parsed = ParsePage(html, url);
+        _pageCache[url] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        return parsed;
     }
 
     internal static ResolvedMediaPage ParsePage(string html, string pageUrl)
@@ -395,7 +403,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             .OrderByDescending(s => s.Format.Equals("mp4", StringComparison.OrdinalIgnoreCase))
             .ThenByDescending(s => s.Height ?? 0)
             .ThenByDescending(s => s.IsDefault)
-            .FirstOrDefault();
+            .FirstOrDefault(s => s.Format.Equals("mp4", StringComparison.OrdinalIgnoreCase))
+            ?? candidates.FirstOrDefault();
     }
 
     private HttpClient CreateHttpClient(IDownloaderHost? host = null)

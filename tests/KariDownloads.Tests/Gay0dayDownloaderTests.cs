@@ -249,4 +249,86 @@ public sealed class Gay0dayDownloaderTests
         Assert.DoesNotContain("Austin Young", result.InlineVideoMetadata.PerformerNames);
         Assert.DoesNotContain("Cutler X", result.InlineVideoMetadata.PerformerNames);
     }
+
+    [Fact]
+    public async Task DownloadAsync_PreservesPunctuationInMetadataTitle_WhileSanitizingFilename()
+    {
+        const string pageUrl = "https://gay0day.com/videos/99999/test-colon/";
+        const string mediaUrl = "https://gay0day.com/media/test.mp4";
+        const string htmlWithColonTitle = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <script type="application/ld+json">
+                {
+                  "@context": "https://schema.org",
+                  "@type": "VideoObject",
+                  "name": "Surfer Boys: Ander, Big & Ian: Beach Day!",
+                  "contentUrl": "https://gay0day.com/media/test.mp4"
+                }
+                </script>
+            </head>
+            <body></body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithColonTitle)
+            .MapBytes(mediaUrl, [0x01, 0x02, 0x03, 0x04], "video/mp4");
+
+        var extension = new Gay0dayDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                Gay0dayDownloaderExtension.PrimaryDownloaderId,
+                pageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["gay0day.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.NotNull(result.InlineVideoMetadata);
+        // Metadata title must preserve colons and exclamation points
+        Assert.Equal("Surfer Boys: Ander, Big & Ian: Beach Day!", result.InlineVideoMetadata.Title);
+        // Filename must NOT contain invalid path characters like colon
+        Assert.DoesNotContain(":", result.OriginalFilename);
+    }
+
+    [Fact]
+    public async Task MatchAsync_DiscoversMultiQualityOptions()
+    {
+        const string pageUrl = "https://gay0day.com/videos/88888/multi-res/";
+        const string htmlWithSources = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Multi Res Video - Gay0Day</title>
+            </head>
+            <body>
+                <video id="player">
+                    <source src="https://gay0day.com/media/video_1080p.mp4" title="1080p" />
+                    <source src="https://gay0day.com/media/video_720p.mp4" title="720p" />
+                    <source src="https://gay0day.com/media/video_480p.mp4" title="480p" />
+                </video>
+            </body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(pageUrl, htmlWithSources);
+
+        var extension = new Gay0dayDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var match = await extension.MatchAsync(pageUrl, CancellationToken.None);
+
+        Assert.NotNull(match);
+        Assert.NotNull(match.QualityOptions);
+        Assert.Equal(3, match.QualityOptions.Count);
+        Assert.Contains(match.QualityOptions, q => q.Id == "1080p" && q.Height == 1080);
+        Assert.Contains(match.QualityOptions, q => q.Id == "720p" && q.Height == 720);
+        Assert.Contains(match.QualityOptions, q => q.Id == "480p" && q.Height == 480);
+    }
 }

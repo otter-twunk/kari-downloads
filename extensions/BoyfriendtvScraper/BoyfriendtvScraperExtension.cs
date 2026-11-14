@@ -83,7 +83,35 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
     {
         var sourceUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedVideoUrl(sourceUrl))
+        {
+            var fallbackTitle = CleanVideoTitle(request.Input.Title ?? string.Empty);
+            if (!string.IsNullOrWhiteSpace(fallbackTitle) && !fallbackTitle.Equals("Untitled", StringComparison.OrdinalIgnoreCase))
+            {
+                var searchResults = await SearchVideosAsync(
+                    new ScraperRequest<string>(VideoScraperId, fallbackTitle, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapeVideoAsync(
+                        new ScraperRequest<VideoScrapeInput>(
+                            request.ScraperId,
+                            new VideoScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Title = fallbackTitle,
+                                Code = request.Input.Code,
+                                Date = request.Input.Date,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         var html = await ScraperUtilities.FetchHtmlAsync(
             CreateHttpClient(),
@@ -298,11 +326,21 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             var codeMatch = VideoIdRegex.Match(fullUrl);
             var code = codeMatch.Success ? codeMatch.Groups["id"].Value : null;
 
+            string? thumb = null;
+            var imgMatch = Regex.Match(match.Groups["text"].Value, @"(?is)<img\b[^>]*\b(?:data-src|src)=['""](?<src>[^'""]+)['""]");
+            if (imgMatch.Success)
+            {
+                var src = imgMatch.Groups["src"].Value.Trim();
+                if (!src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    thumb = src;
+            }
+
             results.Add(new ScrapedVideoDto
             {
                 SourceScraperId = VideoScraperId,
                 Title = title,
                 Code = code,
+                ImageUrl = thumb,
                 Urls = [fullUrl],
                 StudioName = DefaultStudioName
             });

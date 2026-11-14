@@ -25,7 +25,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex VideoIdRegex = new(
-        @"(?:data-video-id=[""'](?<id>\d+)[""']|videoId:\s*['""]?(?<id>\d+)|/(?:videos|embed)/(?<id>\d+))",
+        @"/(?:videos|embed)/(?<id>\d+)|(?:data-video-id=[""'](?<id>\d+)[""']|videoId:\s*['""]?(?<id>\d+))",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex TitleSuffixRegex = new(
@@ -72,6 +72,9 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         @"(?is)https?://[^'""<>\s]+/get_file/\d+/[a-f0-9]+/\d+/\d+/\d+\.mp4[^\s'""]*",
         RegexOptions.Compiled);
 
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private IServiceProvider? _services;
     private IConfiguration? _configuration;
 
@@ -102,7 +105,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
             return null;
 
         var normalizedUrl = NormalizeVideoUrl(url);
-        var pageInfo = await TryInspectPageAsync(normalizedUrl, ct);
+        var pageInfo = await TryInspectPageAsync(normalizedUrl, host: null, ct);
         var qualityOptions = pageInfo?.Streams
             .Where(s => !string.IsNullOrWhiteSpace(s.QualityId))
             .Select(s => new DownloaderQualityOption(s.QualityId, s.Height != null ? $"{s.Height}p" : s.QualityId) { Height = s.Height })
@@ -114,7 +117,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
             normalizedUrl,
             QualityOptions: qualityOptions is { Count: > 0 } ? qualityOptions : null,
             Label: pageInfo?.Title ?? DownloaderUtilities.DeriveTitleFromUrl(normalizedUrl, "ThisVid Downloader"),
-            SourceUrl: url);
+            SourceUrl: string.Equals(url, normalizedUrl, StringComparison.OrdinalIgnoreCase) ? null : url);
     }
 
     public async Task<DownloaderResult?> DownloadAsync(
@@ -131,7 +134,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         var targetUrl = NormalizeVideoUrl(request.Url);
 
         host.ReportProgress(5.0, "Inspecting ThisVid media page...");
-        var pageInfo = await InspectPageAsync(targetUrl, ct);
+        var pageInfo = await InspectPageAsync(targetUrl, host, ct);
 
         var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
             ?? throw new InvalidOperationException($"Could not locate a suitable video stream for {targetUrl}");
@@ -173,6 +176,7 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
                 ImageUrl = pageInfo.PosterUrl,
                 Urls = [request.SourceUrl ?? targetUrl],
                 StudioName = DefaultStudioName,
+                PerformerNames = pageInfo.PerformerNames,
                 TagNames = pageInfo.TagNames
             });
     }
@@ -203,11 +207,11 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         return url;
     }
 
-    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
         try
         {
-            return await InspectPageAsync(url, ct);
+            return await InspectPageAsync(url, host, ct);
         }
         catch
         {
@@ -215,9 +219,12 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         }
     }
 
-    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, CancellationToken ct)
+    internal async Task<ResolvedMediaPage> InspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
         var targetUrl = NormalizeVideoUrl(url);
+        if (_pageCache.TryGetValue(targetUrl, out var entry) && entry.Expiry > DateTime.UtcNow)
+            return entry.Page;
+
         using var request = new HttpRequestMessage(HttpMethod.Get, targetUrl);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
         request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
@@ -226,11 +233,13 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         if (!string.IsNullOrWhiteSpace(cookie))
             request.Headers.TryAddWithoutValidation("Cookie", cookie);
 
-        using var response = await CreateHttpClient().SendAsync(request, ct);
+        using var response = await CreateHttpClient(host).SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
 
         var html = await response.Content.ReadAsStringAsync(ct);
-        return ParsePage(html, targetUrl);
+        var parsed = ParsePage(html, targetUrl);
+        _pageCache[targetUrl] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        return parsed;
     }
 
     public static ResolvedMediaPage ParsePage(string html, string url)
@@ -315,6 +324,13 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         ExtractAnchorsFromBlock(TagsBlockRegex);
 
         var deduplicatedTags = ScraperUtilities.DeduplicateStrings(tags);
+        var performers = new List<string>();
+        foreach (Match match in Regex.Matches(html, @"(?is)href=['""](?:https?://(?:www\.)?thisvid\.com)?/models/[^/'""]+/?['""][^>]*>(?<name>[^<]+)</a>"))
+        {
+            var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
+            if (!string.IsNullOrWhiteSpace(name))
+                performers.Add(name);
+        }
 
         return new ResolvedMediaPage(
             url,
@@ -324,7 +340,8 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
             date,
             posterUrl,
             videoId,
-            deduplicatedTags);
+            deduplicatedTags,
+            ScraperUtilities.DeduplicateStrings(performers));
     }
 
     public static List<MediaStream> ExtractMediaStreams(string html, string pageUrl)
@@ -557,5 +574,6 @@ public sealed class ThisvidDownloaderExtension : CoveExtensionBase, IDownloaderP
         string? Date,
         string? PosterUrl,
         string? VideoId,
-        List<string> TagNames);
+        List<string> TagNames,
+        List<string> PerformerNames);
 }
