@@ -110,9 +110,7 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
                                 Code = request.Input.Code,
                                 Date = request.Input.Date,
                                 Details = request.Input.Details,
-                                Director = request.Input.Director,
-                                PerformerNames = request.Input.PerformerNames,
-                                TagNames = request.Input.TagNames
+                                Director = request.Input.Director
                             },
                             request.Permissions),
                         ct);
