@@ -431,14 +431,15 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
 
     private async Task<string> FetchPageHtmlAsync(string url, CancellationToken ct)
     {
+        url = BoyfriendtvAuthHelper.CanonicalizePageUrl(url);
         var client = CreateHttpClient();
         var headers = await _auth.GetSessionHeadersAsync(
             client,
             url,
             _services,
             _configuration,
-            Id ?? VideoScraperId,
-            Name ?? nameof(BoyfriendtvScraperExtension),
+            SafeExtensionId,
+            SafeExtensionName,
             ct);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -554,6 +555,15 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         }
 
         return null;
+    }
+
+    private string SafeExtensionId => TryGetManifestValue(() => Id, VideoScraperId);
+    private string SafeExtensionName => TryGetManifestValue(() => Name, nameof(BoyfriendtvScraperExtension));
+
+    private static string TryGetManifestValue(Func<string> getter, string fallback)
+    {
+        try { return getter(); }
+        catch (InvalidOperationException) { return fallback; }
     }
 
     private HttpClient CreateHttpClient()

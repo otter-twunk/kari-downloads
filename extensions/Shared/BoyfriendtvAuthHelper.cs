@@ -28,7 +28,7 @@ internal sealed class BoyfriendtvAuthHelper
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
     private readonly ConcurrentDictionary<string, CachedSession> _sessions = new(StringComparer.Ordinal);
-    private readonly ConcurrentDictionary<string, DateTime> _failedCredentials = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, FailedLogin> _failedCredentials = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _loginLock = new(1, 1);
 
     public async Task<Dictionary<string, string>> GetSessionHeadersAsync(
@@ -40,6 +40,7 @@ internal sealed class BoyfriendtvAuthHelper
         string extensionName,
         CancellationToken ct)
     {
+        targetUrl = CanonicalizePageUrl(targetUrl);
         var origin = GetOrigin(targetUrl);
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -49,6 +50,27 @@ internal sealed class BoyfriendtvAuthHelper
         var cookie = await ResolveCookieAsync(client, targetUrl, origin, services, configuration, extensionId, extensionName, ct);
         headers["Cookie"] = EnsureAgeVerifiedCookie(cookie);
         return headers;
+    }
+
+    /// <summary>
+    /// Rewrites legacy <c>boyfriendtv.com</c> page URLs to <c>www.boyfriend.tv</c>.
+    /// The legacy domain sits behind a Cloudflare bot challenge (HTTP 403 for non-browser
+    /// clients), while the same <c>/videos/&lt;id&gt;/&lt;slug&gt;/</c> path on boyfriend.tv is served directly.
+    /// </summary>
+    public static string CanonicalizePageUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return url;
+
+        var host = uri.Host;
+        if (!host.Equals("boyfriendtv.com", StringComparison.OrdinalIgnoreCase)
+            && !host.Equals("www.boyfriendtv.com", StringComparison.OrdinalIgnoreCase))
+        {
+            return url;
+        }
+
+        var builder = new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Host = "www.boyfriend.tv", Port = -1 };
+        return builder.Uri.AbsoluteUri;
     }
 
     public static string GetOrigin(string? url)
@@ -81,15 +103,14 @@ internal sealed class BoyfriendtvAuthHelper
         {
             throw new InvalidOperationException(
                 $"BoyfriendTV denied access to {url} (HTTP {(int)statusCode}). " +
-                "Verify your BoyfriendTV credentials in Cove Settings > Downloader Credentials or configure a Cookie Header.");
+                "Check the BoyfriendTV login on the Cove Downloads page. " + CookieInstructions);
         }
 
         if (IsAgeVerificationOrLoginWall(html))
         {
             throw new InvalidOperationException(
                 $"BoyfriendTV returned an age-verification or login wall for {url}. " +
-                "Ensure valid BoyfriendTV login credentials are saved in Cove Settings > Downloader Credentials, " +
-                "or set a Cookie Header in extension settings.");
+                "Videos are only served to signed-in, age-verified accounts. " + CookieInstructions);
         }
     }
 
@@ -123,7 +144,31 @@ internal sealed class BoyfriendtvAuthHelper
             || html.Contains("/age-verification", StringComparison.OrdinalIgnoreCase)
             || html.Contains("age-verification-modal", StringComparison.OrdinalIgnoreCase)
             || html.Contains("agegate", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("must be logged in to watch", StringComparison.OrdinalIgnoreCase);
+            || html.Contains("must be logged in to watch", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("rta-section", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("rta_terms_accepted", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static async Task<HttpResponseMessage> SendWithRateLimitRetryAsync(
+        HttpClient client,
+        Func<HttpRequestMessage> requestFactory,
+        CancellationToken ct,
+        int maxRetries = 3)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            using var request = requestFactory();
+            var response = await client.SendAsync(request, ct);
+            if (response.StatusCode != HttpStatusCode.TooManyRequests || attempt >= maxRetries)
+                return response;
+
+            var delay = response.Headers.RetryAfter?.Delta is { } retryAfter && retryAfter > TimeSpan.Zero
+                ? retryAfter
+                : TimeSpan.FromSeconds(Math.Min(8, 2 * (attempt + 1)));
+
+            response.Dispose();
+            await Task.Delay(delay, ct);
+        }
     }
 
     private async Task<string?> ResolveCookieAsync(
@@ -141,21 +186,25 @@ internal sealed class BoyfriendtvAuthHelper
         if (!string.IsNullOrWhiteSpace(configuredCookie))
             return configuredCookie;
 
-        // 2. Live Cove Downloader Credentials (IDownloaderSiteLoginProvider)
-        var login = services?.GetService<IDownloaderSiteLoginProvider>()?.FindForUrl(targetUrl);
+        // 2. Live Cove Downloader Credentials (Downloads page > site login entry)
+        var login = FindSiteLogin(services?.GetService<IDownloaderSiteLoginProvider>(), targetUrl);
         if (login == null)
             return null;
 
-        // Allow pasting a raw Cookie header in Password as an escape hatch
-        if (login.Password.Contains('=') && login.Password.Contains(';'))
-            return login.Password.Trim();
+        // A browser Cookie header pasted into the Password field is used as-is. This is the
+        // reliable path: BoyfriendTV's /login/ page sits behind a Cloudflare bot challenge.
+        if (TryParseCookieHeader(login.Password, out var pastedCookie))
+            return pastedCookie;
 
-        var credKey = $"{origin}|{login.Username}|{login.SavedAt?.Ticks ?? 0}";
+        if (string.IsNullOrWhiteSpace(login.Password))
+            return null;
+
+        var credKey = $"{origin}|{login.Username}|{login.SavedAt?.Ticks ?? 0}|{login.Password.GetHashCode()}";
         if (_sessions.TryGetValue(credKey, out var cached) && cached.Expiry > DateTime.UtcNow)
             return cached.CookieHeader;
 
-        if (_failedCredentials.TryGetValue(credKey, out var retryAfter) && retryAfter > DateTime.UtcNow)
-            return null;
+        if (_failedCredentials.TryGetValue(credKey, out var failure) && failure.RetryAfter > DateTime.UtcNow)
+            throw new InvalidOperationException(failure.Message);
 
         await _loginLock.WaitAsync(ct);
         try
@@ -163,17 +212,17 @@ internal sealed class BoyfriendtvAuthHelper
             if (_sessions.TryGetValue(credKey, out cached) && cached.Expiry > DateTime.UtcNow)
                 return cached.CookieHeader;
 
-            if (_failedCredentials.TryGetValue(credKey, out retryAfter) && retryAfter > DateTime.UtcNow)
-                return null;
+            if (_failedCredentials.TryGetValue(credKey, out failure) && failure.RetryAfter > DateTime.UtcNow)
+                throw new InvalidOperationException(failure.Message);
 
             var sessionCookie = await PerformLoginAsync(client, origin, login, ct);
             _sessions[credKey] = new CachedSession(sessionCookie, DateTime.UtcNow.AddMinutes(30));
             _failedCredentials.TryRemove(credKey, out _);
             return sessionCookie;
         }
-        catch
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _failedCredentials[credKey] = DateTime.UtcNow.AddMinutes(5);
+            _failedCredentials[credKey] = new FailedLogin(DateTime.UtcNow.AddMinutes(5), ex.Message);
             throw;
         }
         finally
@@ -191,7 +240,8 @@ internal sealed class BoyfriendtvAuthHelper
         var loginPageUrl = $"{origin}/login/";
         var cookies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["age_verified"] = "1"
+            ["age_verified"] = "1",
+            ["rta_terms_accepted"] = "1"
         };
 
         using var getRequest = new HttpRequestMessage(HttpMethod.Get, loginPageUrl);
@@ -204,11 +254,11 @@ internal sealed class BoyfriendtvAuthHelper
         var loginHtml = await getResponse.Content.ReadAsStringAsync(ct);
         CollectResponseCookies(getResponse, cookies);
 
-        if (IsCloudflareChallenge(getResponse.StatusCode, loginHtml))
+        if (IsCloudflareChallenge(getResponse.StatusCode, loginHtml) || IsCloudflareMitigated(getResponse))
         {
             throw new InvalidOperationException(
-                "BoyfriendTV /login/ is protected by a Cloudflare challenge and cannot be logged in automatically. " +
-                "Sign in using your browser and paste the resulting Cookie header into the extension's Cookie Header setting.");
+                "BoyfriendTV's /login/ page is protected by a Cloudflare bot challenge, so Cove cannot sign in with a " +
+                "username and password. " + CookieInstructions);
         }
 
         getResponse.EnsureSuccessStatusCode();
@@ -229,24 +279,24 @@ internal sealed class BoyfriendtvAuthHelper
         var postHtml = await postResponse.Content.ReadAsStringAsync(ct);
         CollectResponseCookies(postResponse, cookies);
 
-        if (IsCloudflareChallenge(postResponse.StatusCode, postHtml))
+        if (IsCloudflareChallenge(postResponse.StatusCode, postHtml) || IsCloudflareMitigated(postResponse))
         {
             throw new InvalidOperationException(
-                "BoyfriendTV login submission was blocked by a Cloudflare challenge. " +
-                "Sign in using your browser and paste the resulting Cookie header into the extension's Cookie Header setting.");
+                "BoyfriendTV login submission was blocked by a Cloudflare bot challenge. " + CookieInstructions);
         }
 
-        // Verify we received at least one non-trivial session/auth cookie beyond age_verified
-        var hasSessionCookie = cookies.Keys.Any(k =>
-            !k.Equals("age_verified", StringComparison.OrdinalIgnoreCase)
-            && !k.Equals("traffic_type", StringComparison.OrdinalIgnoreCase)
-            && !k.Equals("mobileVersionWeb", StringComparison.OrdinalIgnoreCase));
+        // Verify the POST itself issued a session/auth cookie (the seeded consent cookies don't count).
+        var hasSessionCookie = postResponse.Headers.TryGetValues("Set-Cookie", out var postSetCookies)
+            && postSetCookies
+                .Select(h => h.Split(';', 2)[0].Split('=', 2)[0].Trim())
+                .Any(name => !NonSessionCookieNames.Contains(name));
 
         if (!hasSessionCookie || postHtml.Contains("Invalid username or password", StringComparison.OrdinalIgnoreCase)
             || postHtml.Contains("incorrect username or password", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
-                "BoyfriendTV login failed. Verify your username and password in Cove Settings > Downloader Credentials.");
+                "BoyfriendTV login failed. Verify the username and password of the BoyfriendTV login on the Cove Downloads page, " +
+                "or paste a browser Cookie header into its Password field instead.");
         }
 
         return FormatCookieHeader(cookies);
@@ -332,12 +382,16 @@ internal sealed class BoyfriendtvAuthHelper
     private static string EnsureAgeVerifiedCookie(string? cookie)
     {
         if (string.IsNullOrWhiteSpace(cookie))
-            return "age_verified=1";
+            return "age_verified=1; rta_terms_accepted=1";
 
-        if (cookie.Contains("age_verified=", StringComparison.OrdinalIgnoreCase))
-            return cookie.Trim();
+        var result = cookie.Trim().TrimEnd(';');
+        if (!result.Contains("age_verified=", StringComparison.OrdinalIgnoreCase))
+            result += "; age_verified=1";
 
-        return $"{cookie.Trim().TrimEnd(';')}; age_verified=1";
+        if (!result.Contains("rta_terms_accepted=", StringComparison.OrdinalIgnoreCase))
+            result += "; rta_terms_accepted=1";
+
+        return result;
     }
 
     private static void CollectResponseCookies(HttpResponseMessage response, Dictionary<string, string> cookies)
@@ -377,5 +431,78 @@ internal sealed class BoyfriendtvAuthHelper
         return result;
     }
 
+    /// <summary>
+    /// Looks up the Downloads-page site login for a BoyfriendTV URL. Users commonly save the entry
+    /// under either domain (e.g. <c>https://www.boyfriendtv.com/</c>) while page URLs are
+    /// canonicalized to <c>www.boyfriend.tv</c>, so every host alias is tried.
+    /// </summary>
+    internal static DownloaderSiteLogin? FindSiteLogin(IDownloaderSiteLoginProvider? provider, string targetUrl)
+    {
+        if (provider == null)
+            return null;
+
+        var direct = provider.FindForUrl(targetUrl);
+        if (direct != null)
+            return direct;
+
+        var pathAndQuery = Uri.TryCreate(targetUrl, UriKind.Absolute, out var uri) ? uri.PathAndQuery : "/";
+        foreach (var host in LoginHostAliases)
+        {
+            var login = provider.FindForUrl($"https://{host}{pathAndQuery}")
+                ?? provider.FindForUrl($"https://{host}/");
+            if (login != null)
+                return login;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Detects a browser Cookie header pasted into the login entry's Password field,
+    /// e.g. <c>PHPSESSID=abc123</c> or <c>Cookie: PHPSESSID=abc; kt_member=xyz</c>.
+    /// </summary>
+    internal static bool TryParseCookieHeader(string? value, out string cookieHeader)
+    {
+        cookieHeader = string.Empty;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("Cookie:", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed["Cookie:".Length..].Trim();
+
+        if (!trimmed.Contains('=') || !CookiePairsRegex.IsMatch(trimmed))
+            return false;
+
+        cookieHeader = trimmed.TrimEnd(';', ' ');
+        return true;
+    }
+
+    private static bool IsCloudflareMitigated(HttpResponseMessage response)
+        => response.Headers.TryGetValues("Cf-Mitigated", out var values)
+            && values.Any(v => v.Contains("challenge", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly string[] LoginHostAliases =
+        ["www.boyfriend.tv", "boyfriend.tv", "www.boyfriendtv.com", "boyfriendtv.com"];
+
+    private static readonly HashSet<string> NonSessionCookieNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "age_verified", "rta_terms_accepted", "cookies_accepted", "traffic_type", "mobileVersionWeb",
+        "__cf_bm", "cf_clearance", "_cfuvid"
+    };
+
+    // One or more name=value pairs separated by ';' with no spaces inside the first value,
+    // so ordinary passwords (which rarely look like "token=value") are not mistaken for cookies.
+    private static readonly Regex CookiePairsRegex = new(
+        @"^[!#$%&'*+.^_`|~0-9A-Za-z-]+=[^;\s]*(\s*;\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=[^;]*)*;?$",
+        RegexOptions.Compiled);
+
+    private const string CookieInstructions =
+        "Sign in to boyfriend.tv in your browser with an age-verified account, copy the request Cookie header " +
+        "(browser dev tools > Network > any boyfriend.tv page request > Request Headers > Cookie), and paste it into " +
+        "the Password field of the BoyfriendTV login on the Cove Downloads page, or into the extension's Cookie Header setting.";
+
     private sealed record CachedSession(string CookieHeader, DateTime Expiry);
+
+    private sealed record FailedLogin(DateTime RetryAfter, string Message);
 }
