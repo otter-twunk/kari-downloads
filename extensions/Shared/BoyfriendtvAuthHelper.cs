@@ -27,6 +27,19 @@ internal sealed class BoyfriendtvAuthHelper
         @"([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:(['""])(.*?)\2|([^\s>]+))",
         RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
 
+    // Captures the full opening tag so the caller can inspect class names (e.g. skip sidebar tiles).
+    private static readonly Regex PerformerLinkRegex = new(
+        @"(?is)(?<open><a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+/['""][^>]*>)(?<name>.*?)</a>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex TagLinkRegex = new(
+        @"(?is)(?<open><a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>)(?<name>.*?)</a>",
+        RegexOptions.Compiled);
+
+    private static readonly Regex ClassAttrRegex = new(
+        @"(?is)\bclass\s*=\s*['""](?<c>[^'""]*)['""]",
+        RegexOptions.Compiled);
+
     private readonly ConcurrentDictionary<string, CachedSession> _sessions = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, FailedLogin> _failedCredentials = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _loginLock = new(1, 1);
@@ -113,6 +126,64 @@ internal sealed class BoyfriendtvAuthHelper
                 "Videos are only served to signed-in, age-verified accounts. " + CookieInstructions);
         }
     }
+
+    /// <summary>
+    /// Extracts the performers and tags that belong to the video itself. Live pages list them in
+    /// JSON-LD (<c>actor</c> / <c>keywords</c>) and in <c>model-card</c> / <c>btn-tag</c> links, but also
+    /// carry a site-wide "popular models" sidebar (<c>mtile-*</c> tiles with stat counters) and
+    /// "See more" links that must not be attributed to the video.
+    /// </summary>
+    public static (List<string> Performers, List<string> Tags) ExtractVideoPerformersAndTags(
+        string html,
+        IEnumerable<string> structuredPerformers,
+        IEnumerable<string> structuredTags,
+        Func<string, string> clean)
+    {
+        var performers = new List<string>();
+        AddDistinct(performers, structuredPerformers);
+        AddDistinct(performers, CollectLinks(html, PerformerLinkRegex, clean));
+
+        var tags = new List<string>();
+        AddDistinct(tags, structuredTags);
+        AddDistinct(tags, CollectLinks(html, TagLinkRegex, clean));
+
+        return (performers, tags);
+    }
+
+    private static void AddDistinct(List<string> target, IEnumerable<string> values)
+    {
+        foreach (var value in values)
+        {
+            var trimmed = value?.Trim();
+            if (IsUsableLinkText(trimmed) && !target.Contains(trimmed!, StringComparer.OrdinalIgnoreCase))
+                target.Add(trimmed!);
+        }
+    }
+
+    private static IEnumerable<string> CollectLinks(string html, Regex regex, Func<string, string> clean)
+    {
+        if (string.IsNullOrEmpty(html))
+            yield break;
+
+        foreach (Match match in regex.Matches(html))
+        {
+            var classMatch = ClassAttrRegex.Match(match.Groups["open"].Value);
+            var classes = classMatch.Success ? classMatch.Groups["c"].Value : string.Empty;
+
+            // Skip the site-wide "popular models" sidebar tiles and the top-nav "Tags" link.
+            if (classes.Contains("mtile", StringComparison.OrdinalIgnoreCase)
+                || classes.Contains("tKey", StringComparison.Ordinal))
+                continue;
+
+            yield return clean(match.Groups["name"].Value);
+        }
+    }
+
+    private static bool IsUsableLinkText(string? text) =>
+        !string.IsNullOrWhiteSpace(text)
+        && !text.Contains(">>>", StringComparison.Ordinal)
+        && !text.Contains("See more", StringComparison.OrdinalIgnoreCase)
+        && text.Length <= 80;
 
     public static bool IsCloudflareChallenge(HttpStatusCode statusCode, string html)
     {

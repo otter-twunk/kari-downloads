@@ -498,6 +498,30 @@ public sealed class BoyfriendtvDownloaderTests
         Assert.Equal(expectedCookie, (string)args[1]!);
     }
 
+    [Fact]
+    public void ExtractVideoPerformersAndTags_IgnoresSidebarModelTilesAndSeeMoreLinks()
+    {
+        // Mirrors live boyfriend.tv markup: the video's own model-card / btn-tag links, plus a
+        // site-wide "popular models" sidebar whose tiles carry stat counters.
+        const string html = """
+            <a class="model-card" href="/pornstars/jason-crew-79/" title="AKA: "><img src="x.jpg" alt="Photo"> Jason Crew </a>
+            <a class="btn-xs btn-tag" href="/tags/anal/" title="anal">anal</a>
+            <a href="https://www.boyfriend.tv/tags/" class="tKey">Tags</a>
+            <a href="/tags/creators/">&gt;&gt;&gt; See more &gt;&gt;&gt;</a>
+            <a class="mtile-x7__inner" href="/pornstars/kyle-ross-1616/" title="Kyle Ross">
+              <span class="username-wrapper">Kyle Ross</span> 193 40 6.5k 214
+            </a>
+            """;
+
+        var helper = typeof(BoyfriendtvDownloaderExtension).Assembly.GetType("KariDownloads.Shared.BoyfriendtvAuthHelper", throwOnError: true)!;
+        var method = helper.GetMethod("ExtractVideoPerformersAndTags")!;
+        var result = ((List<string> Performers, List<string> Tags))method.Invoke(null,
+            [html, new[] { "Jason Crew" }, new[] { "Anal" }, (Func<string, string>)(s => KariDownloads.Shared.DownloaderUtilities.CleanHtmlFragment(s))])!;
+
+        Assert.Equal(["Jason Crew"], result.Performers);
+        Assert.Equal(["Anal"], result.Tags);
+    }
+
     private sealed class StubLoginProvider(Cove.Plugins.DownloaderSiteLogin login) : Cove.Plugins.IDownloaderSiteLoginProvider
     {
         public Cove.Plugins.DownloaderSiteLogin? FindForUrl(string url) => login;

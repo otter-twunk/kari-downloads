@@ -23,13 +23,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         @"/videos/(?<id>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly Regex PerformerAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+(?:/videos)?/['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.Compiled);
-
-    private static readonly Regex TagAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.Compiled);
 
     private static readonly Regex VideoTitleSuffixRegex = new(
         @"\s*(?:\||-)\s*BoyFriendTV(?:\.com)?\s*$",
@@ -227,21 +220,8 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         var codeMatch = VideoIdRegex.Match(sourceUrl);
         var code = codeMatch.Success ? codeMatch.Groups["id"].Value : (fallbackInput?.Code ?? ScraperUtilities.ExtractCode(title));
 
-        var performers = new List<string>(structured.PerformerNames);
-        foreach (Match match in PerformerAnchorRegex.Matches(html))
-        {
-            var name = ScraperUtilities.CleanText(match.Groups["name"].Value);
-            if (!string.IsNullOrWhiteSpace(name) && !performers.Contains(name, StringComparer.OrdinalIgnoreCase))
-                performers.Add(name);
-        }
-
-        var tags = new List<string>(structured.TagNames);
-        foreach (Match match in TagAnchorRegex.Matches(html))
-        {
-            var tag = ScraperUtilities.CleanText(match.Groups["name"].Value);
-            if (!string.IsNullOrWhiteSpace(tag) && !tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
-                tags.Add(tag);
-        }
+        var (performers, tags) = BoyfriendtvAuthHelper.ExtractVideoPerformersAndTags(
+            html, structured.PerformerNames, structured.TagNames, v => ScraperUtilities.CleanText(v) ?? string.Empty);
 
         return new ScrapedVideoDto
         {
