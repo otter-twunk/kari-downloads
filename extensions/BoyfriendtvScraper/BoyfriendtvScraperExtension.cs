@@ -237,36 +237,12 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
                 performers.Add(name);
         }
 
-        if (fallbackInput?.PerformerNames is { Count: > 0 })
-        {
-            foreach (var fallbackPerformer in fallbackInput.PerformerNames)
-            {
-                if (!string.IsNullOrWhiteSpace(fallbackPerformer)
-                    && !performers.Contains(fallbackPerformer, StringComparer.OrdinalIgnoreCase))
-                {
-                    performers.Add(fallbackPerformer);
-                }
-            }
-        }
-
         var tags = new List<string>(structured.TagNames);
         foreach (Match match in TagAnchorRegex.Matches(html))
         {
             var tag = ScraperUtilities.CleanText(match.Groups["name"].Value);
             if (!string.IsNullOrWhiteSpace(tag) && !tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
                 tags.Add(tag);
-        }
-
-        if (fallbackInput?.TagNames is { Count: > 0 })
-        {
-            foreach (var fallbackTag in fallbackInput.TagNames)
-            {
-                if (!string.IsNullOrWhiteSpace(fallbackTag)
-                    && !tags.Contains(fallbackTag, StringComparer.OrdinalIgnoreCase))
-                {
-                    tags.Add(fallbackTag);
-                }
-            }
         }
 
         return new ScrapedVideoDto

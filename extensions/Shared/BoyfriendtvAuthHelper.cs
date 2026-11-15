@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.RegularExpressions;
 using Cove.Plugins;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KariDownloads.Shared;
 
