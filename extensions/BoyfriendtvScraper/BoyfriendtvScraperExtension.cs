@@ -1,9 +1,11 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Cove.Core.DTOs;
 using Cove.Plugins;
 using Cove.Sdk;
 using KariDownloads.Shared;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace BoyfriendtvScraper;
@@ -15,26 +17,26 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
     public const string PerformerScraperId = "karinauts.scrapers.boyfriendtv.performer";
     public const string DefaultStudioName = "BoyFriendTV";
 
-    private static readonly string[] SupportedDomains = ["boyfriendtv.com"];
+    private static readonly string[] SupportedDomains = BoyfriendtvAuthHelper.SupportedDomains;
 
     private static readonly Regex VideoIdRegex = new(
         @"/videos/(?<id>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PerformerAnchorRegex = new(
-        @"href=""/pornstars/[^""]+/videos/""[^>]*>(?<name>[^<]+)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+(?:/videos)?/['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex TagAnchorRegex = new(
-        @"href=""/tags/[^""]+""[^>]*>(?<name>[^<]+)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex VideoTitleSuffixRegex = new(
         @"\s*(?:\||-)\s*BoyFriendTV(?:\.com)?\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PerformerTitleSuffixRegex = new(
-        @"\s*(?:Gay Pornstar\s*-\s*BoyFriendTV\.com|(?:\||-)\s*BoyFriendTV(?:\.com)?)\s*$",
+        @"\s*(?:Gay Pornstar\s*-\s*BoyFriendTV(?:\.com)?|(?:\||-)\s*BoyFriendTV(?:\.com)?)\s*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PerformerSlugRegex = new(
@@ -49,29 +51,33 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         @"(?is)<a\b[^>]*href=['""](?<href>(?:https?://[^'""]+)?/pornstars/[^'""]+/)['""][^>]*>(?<text>.*?)</a>",
         RegexOptions.Compiled);
 
+    private readonly BoyfriendtvAuthHelper _auth = new();
     private IServiceProvider? _services;
+    private IConfiguration? _configuration;
 
     private static readonly ScraperDescriptor VideoDescriptor = new(
         VideoScraperId,
         "BoyfriendTV Video Scraper",
         ScraperEntity.Video,
         ScraperCapabilities.ByUrl | ScraperCapabilities.ByName,
-        ["boyfriendtv.com/videos/"]);
+        ["boyfriend.tv/videos/", "boyfriendtv.com/videos/"]);
 
     private static readonly ScraperDescriptor PerformerDescriptor = new(
         PerformerScraperId,
         "BoyfriendTV Performer Scraper",
         ScraperEntity.Performer,
         ScraperCapabilities.ByUrl | ScraperCapabilities.ByName,
-        ["boyfriendtv.com/pornstars/"]);
+        ["boyfriend.tv/pornstars/", "boyfriendtv.com/pornstars/"]);
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+        _configuration = context.Configuration;
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _services = services;
+        _configuration ??= services.GetService<IConfiguration>();
         return Task.CompletedTask;
     }
 
@@ -103,7 +109,10 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
                                 Title = fallbackTitle,
                                 Code = request.Input.Code,
                                 Date = request.Input.Date,
-                                Details = request.Input.Details
+                                Details = request.Input.Details,
+                                Director = request.Input.Director,
+                                PerformerNames = request.Input.PerformerNames,
+                                TagNames = request.Input.TagNames
                             },
                             request.Permissions),
                         ct);
@@ -113,12 +122,7 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             return null;
         }
 
-        var html = await ScraperUtilities.FetchHtmlAsync(
-            CreateHttpClient(),
-            sourceUrl!,
-            ct,
-            GetDefaultHeaders());
-
+        var html = await FetchPageHtmlAsync(sourceUrl!, ct);
         return ParseVideoHtml(html, sourceUrl!, request.Input);
     }
 
@@ -130,13 +134,8 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searchUrl = $"https://www.boyfriendtv.com/search/videos/{Uri.EscapeDataString(query)}/";
-        var html = await ScraperUtilities.FetchHtmlAsync(
-            CreateHttpClient(),
-            searchUrl,
-            ct,
-            GetDefaultHeaders());
-
+        var searchUrl = $"https://www.boyfriend.tv/search/videos/{Uri.EscapeDataString(query)}/";
+        var html = await FetchPageHtmlAsync(searchUrl, ct);
         return ParseVideoSearchResultsHtml(html, searchUrl);
     }
 
@@ -146,18 +145,40 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
     {
         var sourceUrl = request.Input.Url ?? request.Input.Urls.FirstOrDefault();
         if (!IsSupportedPerformerUrl(sourceUrl))
+        {
+            var fallbackName = ScraperUtilities.CleanText(request.Input.Name);
+            if (!string.IsNullOrWhiteSpace(fallbackName))
+            {
+                var searchResults = await SearchPerformersAsync(
+                    new ScraperRequest<string>(PerformerScraperId, fallbackName, request.Permissions),
+                    ct);
+
+                var resolvedUrl = searchResults.FirstOrDefault()?.Urls.FirstOrDefault();
+                if (!string.IsNullOrWhiteSpace(resolvedUrl))
+                {
+                    return await ScrapePerformerAsync(
+                        new ScraperRequest<PerformerScrapeInput>(
+                            request.ScraperId,
+                            new PerformerScrapeInput
+                            {
+                                Url = resolvedUrl,
+                                Name = fallbackName,
+                                Details = request.Input.Details
+                            },
+                            request.Permissions),
+                        ct);
+                }
+            }
+
             return null;
+        }
 
         string? html = null;
         try
         {
-            html = await ScraperUtilities.FetchHtmlAsync(
-                CreateHttpClient(),
-                sourceUrl!,
-                ct,
-                GetDefaultHeaders());
+            html = await FetchPageHtmlAsync(sourceUrl!, ct);
         }
-        catch
+        catch (HttpRequestException)
         {
             // Fall back to slug parsing if page is unreachable
         }
@@ -173,13 +194,8 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         if (string.IsNullOrWhiteSpace(query))
             return [];
 
-        var searchUrl = $"https://www.boyfriendtv.com/search/pornstars/{Uri.EscapeDataString(query)}/";
-        var html = await ScraperUtilities.FetchHtmlAsync(
-            CreateHttpClient(),
-            searchUrl,
-            ct,
-            GetDefaultHeaders());
-
+        var searchUrl = $"https://www.boyfriend.tv/search/pornstars/{Uri.EscapeDataString(query)}/";
+        var html = await FetchPageHtmlAsync(searchUrl, ct);
         return ParsePerformerSearchResultsHtml(html, searchUrl);
     }
 
@@ -221,6 +237,18 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
                 performers.Add(name);
         }
 
+        if (fallbackInput?.PerformerNames is { Count: > 0 })
+        {
+            foreach (var fallbackPerformer in fallbackInput.PerformerNames)
+            {
+                if (!string.IsNullOrWhiteSpace(fallbackPerformer)
+                    && !performers.Contains(fallbackPerformer, StringComparer.OrdinalIgnoreCase))
+                {
+                    performers.Add(fallbackPerformer);
+                }
+            }
+        }
+
         var tags = new List<string>(structured.TagNames);
         foreach (Match match in TagAnchorRegex.Matches(html))
         {
@@ -229,12 +257,24 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
                 tags.Add(tag);
         }
 
+        if (fallbackInput?.TagNames is { Count: > 0 })
+        {
+            foreach (var fallbackTag in fallbackInput.TagNames)
+            {
+                if (!string.IsNullOrWhiteSpace(fallbackTag)
+                    && !tags.Contains(fallbackTag, StringComparer.OrdinalIgnoreCase))
+                {
+                    tags.Add(fallbackTag);
+                }
+            }
+        }
+
         return new ScrapedVideoDto
         {
             SourceScraperId = VideoScraperId,
             Title = title,
             Code = code,
-            Date = structured.Date ?? fallbackInput?.Date,
+            Date = structured.Date ?? ScraperUtilities.NormalizeIsoDate(fallbackInput?.Date),
             Details = structured.Description ?? fallbackInput?.Details,
             Director = structured.Director ?? fallbackInput?.Director,
             ImageUrl = structured.ImageUrl,
@@ -250,22 +290,23 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         string? name = null;
         string? details = null;
         string? imageUrl = null;
+        string? eyeColor = null;
+        string? hairColor = null;
+        string? ethnicity = null;
 
-        // 1. Try JSON-LD Person block
+        // 1. Try JSON-LD Person or ProfilePage.mainEntity block
         foreach (var block in DownloaderUtilities.ExtractJsonLdBlocks(html))
         {
             using (block)
             {
-                if (block.RootElement.ValueKind == JsonValueKind.Object
-                    && block.RootElement.TryGetProperty("@type", out var typeProp)
-                    && string.Equals(typeProp.GetString(), "Person", StringComparison.OrdinalIgnoreCase))
+                if (TryFindPersonElement(block.RootElement, out var personElem))
                 {
-                    if (block.RootElement.TryGetProperty("name", out var nProp))
-                        name = nProp.GetString();
-                    if (block.RootElement.TryGetProperty("description", out var dProp))
-                        details = dProp.GetString();
-                    if (block.RootElement.TryGetProperty("image", out var iProp))
-                        imageUrl = iProp.GetString();
+                    name ??= GetJsonString(personElem, "name");
+                    details ??= GetJsonString(personElem, "description");
+                    imageUrl ??= ExtractJsonLdImageUrl(personElem);
+                    eyeColor ??= GetJsonString(personElem, "eyeColor");
+                    hairColor ??= GetJsonString(personElem, "hairColor");
+                    ethnicity ??= GetJsonString(personElem, "ethnicity");
                 }
             }
         }
@@ -278,7 +319,7 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         if (!string.IsNullOrWhiteSpace(name))
             name = CleanPerformerName(name);
 
-        // 3. URL slug fallback if name is still empty (e.g. Cloudflare blocked or minimal HTML)
+        // 3. URL slug fallback if name is still empty
         if (string.IsNullOrWhiteSpace(name))
             name = SlugToPerformerName(sourceUrl) ?? fallbackInput?.Name ?? "Unknown Performer";
 
@@ -294,6 +335,9 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             SourceScraperId = PerformerScraperId,
             Name = name,
             Gender = "Male",
+            EyeColor = eyeColor,
+            HairColor = hairColor,
+            Ethnicity = ethnicity,
             Details = details,
             ImageUrl = imageUrl,
             Urls = [sourceUrl]
@@ -403,7 +447,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             return null;
 
         var slug = match.Groups["slug"].Value;
-        // Strip trailing numeric ID like "-2077"
         slug = Regex.Replace(slug, @"-\d+$", string.Empty);
         var parts = slug.Split('-', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0)
@@ -412,11 +455,132 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         return string.Join(" ", parts.Select(p => char.ToUpperInvariant(p[0]) + p[1..].ToLowerInvariant()));
     }
 
-    private static Dictionary<string, string> GetDefaultHeaders() => new()
+    private async Task<string> FetchPageHtmlAsync(string url, CancellationToken ct)
     {
-        ["Cookie"] = "age_verified=1",
-        ["Referer"] = "https://www.boyfriendtv.com/"
-    };
+        var client = CreateHttpClient();
+        var headers = await _auth.GetSessionHeadersAsync(
+            client,
+            url,
+            _services,
+            _configuration,
+            Id ?? VideoScraperId,
+            Name ?? nameof(BoyfriendtvScraperExtension),
+            ct);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.TryParseAdd(ScraperUtilities.DefaultUserAgent);
+        request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+        foreach (var (key, value) in headers)
+            request.Headers.TryAddWithoutValidation(key, value);
+
+        using var response = await client.SendAsync(request, ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        BoyfriendtvAuthHelper.ThrowIfBlockedOrAgeGated(response.StatusCode, html, url);
+        response.EnsureSuccessStatusCode();
+        return html;
+    }
+
+    private static bool TryFindPersonElement(JsonElement root, out JsonElement personElem)
+    {
+        if (root.ValueKind == JsonValueKind.Object)
+        {
+            if (HasJsonLdType(root, "Person"))
+            {
+                personElem = root;
+                return true;
+            }
+
+            if (HasJsonLdType(root, "ProfilePage")
+                && root.TryGetProperty("mainEntity", out var mainEntity)
+                && mainEntity.ValueKind == JsonValueKind.Object
+                && HasJsonLdType(mainEntity, "Person"))
+            {
+                personElem = mainEntity;
+                return true;
+            }
+
+            if (root.TryGetProperty("@graph", out var graph) && graph.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in graph.EnumerateArray())
+                {
+                    if (TryFindPersonElement(item, out personElem))
+                        return true;
+                }
+            }
+        }
+        else if (root.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in root.EnumerateArray())
+            {
+                if (TryFindPersonElement(item, out personElem))
+                    return true;
+            }
+        }
+
+        personElem = default;
+        return false;
+    }
+
+    private static bool HasJsonLdType(JsonElement elem, string expectedType)
+    {
+        if (!elem.TryGetProperty("@type", out var typeProp))
+            return false;
+
+        if (typeProp.ValueKind == JsonValueKind.String)
+            return string.Equals(typeProp.GetString(), expectedType, StringComparison.OrdinalIgnoreCase);
+
+        if (typeProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in typeProp.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String
+                    && string.Equals(item.GetString(), expectedType, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string? GetJsonString(JsonElement elem, string propertyName)
+    {
+        if (elem.TryGetProperty(propertyName, out var prop) && prop.ValueKind == JsonValueKind.String)
+            return ScraperUtilities.CleanText(prop.GetString());
+
+        return null;
+    }
+
+    private static string? ExtractJsonLdImageUrl(JsonElement elem)
+    {
+        if (!elem.TryGetProperty("image", out var imgProp))
+            return null;
+
+        if (imgProp.ValueKind == JsonValueKind.String)
+            return imgProp.GetString();
+
+        if (imgProp.ValueKind == JsonValueKind.Object)
+            return GetJsonString(imgProp, "url") ?? GetJsonString(imgProp, "contentUrl");
+
+        if (imgProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in imgProp.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                    return item.GetString();
+                if (item.ValueKind == JsonValueKind.Object)
+                {
+                    var url = GetJsonString(item, "url") ?? GetJsonString(item, "contentUrl");
+                    if (!string.IsNullOrWhiteSpace(url))
+                        return url;
+                }
+            }
+        }
+
+        return null;
+    }
 
     private HttpClient CreateHttpClient()
     {

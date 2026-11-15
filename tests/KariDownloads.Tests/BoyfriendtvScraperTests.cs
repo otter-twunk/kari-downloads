@@ -138,7 +138,7 @@ public sealed class BoyfriendtvScraperTests
     [Fact]
     public async Task SearchVideosAsync_ParsesVideoResults()
     {
-        const string searchUrl = "https://www.boyfriendtv.com/search/videos/twink/";
+        const string searchUrl = "https://www.boyfriend.tv/search/videos/twink/";
         using var harness = new FakeDownloaderHost()
             .MapHtml(searchUrl, VideoSearchHtml);
 
@@ -149,7 +149,7 @@ public sealed class BoyfriendtvScraperTests
             new ScraperRequest<string>(
                 BoyfriendtvScraperExtension.VideoScraperId,
                 "twink",
-                new ScraperPermissions(["boyfriendtv.com"])),
+                new ScraperPermissions(["boyfriend.tv", "boyfriendtv.com"])),
             CancellationToken.None);
 
         Assert.NotNull(results);
@@ -164,10 +164,10 @@ public sealed class BoyfriendtvScraperTests
     [Fact]
     public async Task ScrapeVideoAsync_WhenUrlMissing_SearchesByTitleAndScrapesCandidate()
     {
-        const string searchUrl = "https://www.boyfriendtv.com/search/videos/twink/";
+        const string searchUrl = "https://www.boyfriend.tv/search/videos/twink/";
         using var harness = new FakeDownloaderHost()
             .MapHtml(searchUrl, VideoSearchHtml)
-            .MapHtml("https://www.boyfriendtv.com/videos/1426460/handsome-twink-audition/", VideoPageHtml);
+            .MapHtml("https://www.boyfriend.tv/videos/1426460/handsome-twink-audition/", VideoPageHtml);
 
         var extension = new BoyfriendtvScraperExtension();
         await extension.InitializeAsync(harness.Services);
@@ -176,7 +176,7 @@ public sealed class BoyfriendtvScraperTests
             new ScraperRequest<VideoScrapeInput>(
                 BoyfriendtvScraperExtension.VideoScraperId,
                 new VideoScrapeInput { Title = "twink" },
-                new ScraperPermissions(["boyfriendtv.com"])),
+                new ScraperPermissions(["boyfriend.tv", "boyfriendtv.com"])),
             CancellationToken.None);
 
         Assert.NotNull(scraped);
@@ -210,7 +210,7 @@ public sealed class BoyfriendtvScraperTests
     [Fact]
     public async Task ScrapePerformerAsync_FallsBackToSlugWhenPageFailsOrBlocked()
     {
-        // Unmapped URL simulates Cloudflare 403 / network block
+        // Unmapped URL simulates 404 / network unreachable
         using var harness = new FakeDownloaderHost();
 
         var extension = new BoyfriendtvScraperExtension();
@@ -231,7 +231,7 @@ public sealed class BoyfriendtvScraperTests
     [Fact]
     public async Task SearchPerformersAsync_ParsesPerformerResults()
     {
-        const string searchUrl = "https://www.boyfriendtv.com/search/pornstars/scott/";
+        const string searchUrl = "https://www.boyfriend.tv/search/pornstars/scott/";
         using var harness = new FakeDownloaderHost()
             .MapHtml(searchUrl, PerformerSearchHtml);
 
@@ -242,7 +242,7 @@ public sealed class BoyfriendtvScraperTests
             new ScraperRequest<string>(
                 BoyfriendtvScraperExtension.PerformerScraperId,
                 "scott",
-                new ScraperPermissions(["boyfriendtv.com"])),
+                new ScraperPermissions(["boyfriend.tv", "boyfriendtv.com"])),
             CancellationToken.None);
 
         Assert.NotNull(results);
@@ -250,5 +250,189 @@ public sealed class BoyfriendtvScraperTests
         Assert.Equal("Scott Demarco", results[0].Name);
         Assert.Equal("Male", results[0].Gender);
         Assert.Equal("Joey Mills", results[1].Name);
+    }
+
+    [Fact]
+    public void IsSupportedUrls_SupportBoyfriendTvDomain()
+    {
+        Assert.True(BoyfriendtvScraperExtension.IsSupportedVideoUrl("https://www.boyfriend.tv/videos/1757468/dirty-daddy-massage/"));
+        Assert.True(BoyfriendtvScraperExtension.IsSupportedPerformerUrl("https://www.boyfriend.tv/pornstars/tyler-saint-378/"));
+    }
+
+    [Fact]
+    public void ParseVideoHtml_ExtractsModelCardPerformersWithNestedImg()
+    {
+        const string liveStyleHtml = """
+            <html>
+            <head><title>dirty daddy massage | BoyFriendTV</title></head>
+            <body>
+                <a class="model-card" href="/pornstars/tyler-saint-378/" target="_blank">
+                    <img src="https://cc.boyfriend.tv/bftv/models/7b/tylersaint.jpg" alt="Photo">
+                    Tyler Saint
+                </a>
+                <a class="btn-xs btn-tag" href="/tags/big-cock/" title="big cock">big cock</a>
+            </body>
+            </html>
+            """;
+
+        var scraped = BoyfriendtvScraperExtension.ParseVideoHtml(
+            liveStyleHtml,
+            "https://www.boyfriend.tv/videos/1757468/dirty-daddy-massage/");
+
+        Assert.Equal("1757468", scraped.Code);
+        Assert.Contains("Tyler Saint", scraped.PerformerNames);
+        Assert.Contains("big cock", scraped.TagNames);
+    }
+
+    [Fact]
+    public void ParsePerformerHtml_SupportsProfilePageAndImageObjectJsonLd()
+    {
+        const string profilePageHtml = """
+            <html>
+            <head>
+                <title>Tyler Saint Gay Pornstar - BoyFriendTV.com</title>
+                <meta property="og:description" content="Top collection of Tyler Saint gay porn videos." />
+                <script type="application/ld+json">
+                {
+                    "@context": "https://schema.org",
+                    "@type": "ProfilePage",
+                    "mainEntity": {
+                        "@type": "Person",
+                        "name": "Tyler Saint",
+                        "image": {
+                            "@type": "ImageObject",
+                            "url": "https://cc.boyfriend.tv/bftv/models/7b/tylersaint-6-480x640.jpg"
+                        },
+                        "eyeColor": "Brown",
+                        "hairColor": "Brown",
+                        "ethnicity": "White"
+                    }
+                }
+                </script>
+            </head>
+            </html>
+            """;
+
+        var scraped = BoyfriendtvScraperExtension.ParsePerformerHtml(
+            profilePageHtml,
+            "https://www.boyfriend.tv/pornstars/tyler-saint-378/");
+
+        Assert.Equal("Tyler Saint", scraped.Name);
+        Assert.Equal("https://cc.boyfriend.tv/bftv/models/7b/tylersaint-6-480x640.jpg", scraped.ImageUrl);
+        Assert.Equal("Brown", scraped.EyeColor);
+        Assert.Equal("Brown", scraped.HairColor);
+        Assert.Equal("White", scraped.Ethnicity);
+        Assert.Equal("Top collection of Tyler Saint gay porn videos.", scraped.Details);
+    }
+
+    [Fact]
+    public async Task ScrapePerformerAsync_WhenUrlMissing_SearchesByNameAndScrapesCandidate()
+    {
+        const string searchUrl = "https://www.boyfriend.tv/search/pornstars/Scott%20Demarco/";
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(searchUrl, PerformerSearchHtml)
+            .MapHtml("https://www.boyfriend.tv/pornstars/scott-demarco-2077/", PerformerPageHtml);
+
+        var extension = new BoyfriendtvScraperExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var scraped = await extension.ScrapePerformerAsync(
+            new ScraperRequest<PerformerScrapeInput>(
+                BoyfriendtvScraperExtension.PerformerScraperId,
+                new PerformerScrapeInput { Name = "Scott Demarco" },
+                new ScraperPermissions(["boyfriend.tv"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Scott Demarco", scraped.Name);
+        Assert.Equal("Popular performer profile.", scraped.Details);
+    }
+
+    [Fact]
+    public async Task ScrapeVideoAsync_LogsInWithDownloaderSiteCredentials_AndThrowsOnAgeGateWithoutSession()
+    {
+        const string targetUrl = "https://www.boyfriend.tv/videos/1426460/handsome-twink-audition/";
+        const string loginUrl = "https://www.boyfriend.tv/login/";
+        string? observedVideoCookie = null;
+
+        using var harness = new FakeDownloaderHost();
+
+        // Handle GET vs POST on /login/
+        harness.MapResponse(loginUrl, req =>
+        {
+            if (req.Method == HttpMethod.Get)
+            {
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        <form action="/login/" method="post">
+                            <input type="hidden" name="csrf" value="tok123" />
+                            <input type="text" name="username" />
+                            <input type="password" name="pass" />
+                        </form>
+                        """)
+                };
+            }
+
+            var resp = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("<html><body>Welcome</body></html>")
+            };
+            resp.Headers.Add("Set-Cookie", "PHPSESSID=auth_session_xyz; path=/; HttpOnly");
+            return resp;
+        });
+
+        harness.MapResponse(targetUrl, req =>
+        {
+            observedVideoCookie = req.Headers.TryGetValues("Cookie", out var vals) ? string.Join("; ", vals) : null;
+            if (observedVideoCookie?.Contains("PHPSESSID=auth_session_xyz", StringComparison.Ordinal) == true)
+            {
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(VideoPageHtml)
+                };
+            }
+
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("<html><body><h1>Age verification required</h1><p>Please verify your age.</p></body></html>")
+            };
+        });
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(harness.HttpClients);
+        services.AddSingleton<IDownloaderSiteLoginProvider>(new StubLoginProvider(
+            new DownloaderSiteLogin("boyfriend.tv", "kari", "secret")));
+        using var provider = services.BuildServiceProvider();
+
+        var extension = new BoyfriendtvScraperExtension();
+        await extension.InitializeAsync(provider);
+
+        var scraped = await extension.ScrapeVideoAsync(
+            new ScraperRequest<VideoScrapeInput>(
+                BoyfriendtvScraperExtension.VideoScraperId,
+                new VideoScrapeInput { Url = targetUrl },
+                new ScraperPermissions(["boyfriend.tv"])),
+            CancellationToken.None);
+
+        Assert.NotNull(scraped);
+        Assert.Equal("Handsome Twink Audition", scraped.Title);
+        Assert.Contains("PHPSESSID=auth_session_xyz", observedVideoCookie);
+
+        // Without credentials, age-verification wall raises an actionable InvalidOperationException
+        var unauthExtension = new BoyfriendtvScraperExtension();
+        await unauthExtension.InitializeAsync(harness.Services);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            unauthExtension.ScrapeVideoAsync(
+                new ScraperRequest<VideoScrapeInput>(
+                    BoyfriendtvScraperExtension.VideoScraperId,
+                    new VideoScrapeInput { Url = targetUrl },
+                    new ScraperPermissions(["boyfriend.tv"])),
+                CancellationToken.None));
+    }
+
+    private sealed class StubLoginProvider(DownloaderSiteLogin login) : IDownloaderSiteLoginProvider
+    {
+        public DownloaderSiteLogin? FindForUrl(string url) => login;
     }
 }

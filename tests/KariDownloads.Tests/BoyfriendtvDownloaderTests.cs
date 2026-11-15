@@ -146,4 +146,118 @@ public sealed class BoyfriendtvDownloaderTests
         Assert.Equal("Handsome Twink First Audition.mp4", result.OriginalFilename);
         Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
     }
+
+    [Fact]
+    public void IsSupportedUrl_SupportsBoyfriendTvAndRejectsNonVideoPaths()
+    {
+        Assert.True(BoyfriendtvDownloaderExtension.IsSupportedUrl("https://www.boyfriend.tv/videos/1757468/dirty-daddy-massage/"));
+        Assert.True(BoyfriendtvDownloaderExtension.IsSupportedUrl("https://www.boyfriend.tv/embed/1757468/63758/"));
+        Assert.False(BoyfriendtvDownloaderExtension.IsSupportedUrl("https://www.boyfriend.tv/pornstars/tyler-saint-378/"));
+    }
+
+    [Fact]
+    public void ExtractMediaStreams_SupportsPlayerConfigSources()
+    {
+        const string html = """
+            <script>
+                var playerConfig = {
+                    sources: {"hlsAuto":"https:\/\/cdn.boyfriend.tv\/key=abc,end=123\/media=hls4A\/2026-11\/_TPL_.mp4"},
+                    aspectRatio: '852/480'
+                };
+            </script>
+            """;
+
+        var streams = BoyfriendtvDownloaderExtension.ExtractMediaStreams(
+            html,
+            "https://www.boyfriend.tv/videos/1757468/dirty-daddy-massage/");
+
+        Assert.Single(streams);
+        Assert.Equal("hls", streams[0].Format);
+        Assert.Equal("https://cdn.boyfriend.tv/key=abc,end=123/media=hls4A/2026-11/_TPL_.mp4", streams[0].VideoUrl);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_LogsInWithCredentials_AndSendsCookieToCdn()
+    {
+        const string videoUrl = "https://www.boyfriend.tv/videos/1426460/selector/";
+        const string loginUrl = "https://www.boyfriend.tv/login/";
+        string? observedCdnCookie = null;
+
+        using var harness = new FakeDownloaderHost();
+        harness.MapResponse(loginUrl, req =>
+        {
+            if (req.Method == HttpMethod.Get)
+            {
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        <form action="/login/" method="post">
+                            <input type="text" name="username" />
+                            <input type="password" name="pass" />
+                        </form>
+                        """)
+                };
+            }
+
+            var resp = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("ok")
+            };
+            resp.Headers.Add("Set-Cookie", "PHPSESSID=dl_sess_99; path=/");
+            return resp;
+        });
+
+        harness.MapResponse(videoUrl, req =>
+        {
+            var cookie = req.Headers.TryGetValues("Cookie", out var vals) ? string.Join("; ", vals) : string.Empty;
+            if (cookie.Contains("PHPSESSID=dl_sess_99", StringComparison.Ordinal))
+            {
+                return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent(RealisticPageHtml)
+                };
+            }
+
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("<html><body>Age verification required</body></html>")
+            };
+        });
+
+        harness.MapResponse(Stream1080Url, req =>
+        {
+            observedCdnCookie = req.Headers.TryGetValues("Cookie", out var vals) ? string.Join("; ", vals) : null;
+            var content = new ByteArrayContent([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("video/mp4");
+            content.Headers.ContentLength = 8;
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = content };
+        });
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(harness.HttpClients);
+        services.AddSingleton<Cove.Plugins.IDownloaderSiteLoginProvider>(
+            new StubLoginProvider(new Cove.Plugins.DownloaderSiteLogin("boyfriend.tv", "kari", "secret")));
+        using var provider = services.BuildServiceProvider();
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(provider);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                videoUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("1426460", result.InlineVideoMetadata?.Code);
+        Assert.Contains("PHPSESSID=dl_sess_99", observedCdnCookie);
+    }
+
+    private sealed class StubLoginProvider(Cove.Plugins.DownloaderSiteLogin login) : Cove.Plugins.IDownloaderSiteLoginProvider
+    {
+        public Cove.Plugins.DownloaderSiteLogin? FindForUrl(string url) => login;
+    }
 }

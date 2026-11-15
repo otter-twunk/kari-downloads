@@ -71,6 +71,12 @@ public sealed class FakeDownloaderHost : IDownloaderHost, IDisposable
         return this;
     }
 
+    public FakeDownloaderHost MapResponse(string url, Func<HttpRequestMessage, HttpResponseMessage> factory)
+    {
+        _routes[url] = factory;
+        return this;
+    }
+
     public ILogger CreateLogger(string categoryName) => NullLogger.Instance;
 
     public void ReportProgress(double progress, string? message = null)

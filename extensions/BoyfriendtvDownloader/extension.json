@@ -1,8 +1,8 @@
 {
   "id": "karinauts.downloaders.boyfriendtv",
   "name": "BoyfriendTV Downloader",
-  "version": "0.1.2",
-  "description": "Downloads video media and inline metadata from boyfriendtv.com.",
+  "version": "0.1.3",
+  "description": "Downloads video media and inline metadata from boyfriend.tv and boyfriendtv.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
   "categories": [
@@ -15,17 +15,37 @@
   "dependencies": {},
   "permissions": {
     "network": [
+      "boyfriend.tv",
+      "*.boyfriend.tv",
+      "cdn.boyfriend.tv",
+      "cdn77.boyfriend.tv",
+      "cc.boyfriend.tv",
       "boyfriendtv.com",
       "*.boyfriendtv.com",
       "cdn.boyfriendtv.com",
-      "*.cdn.boyfriendtv.com"
+      "*.cdn.boyfriendtv.com",
+      "cdn77-t.boyfriendtv.com"
     ],
     "scraperRuntime": [],
     "downloaderRuntime": [
+      "boyfriend.tv",
+      "*.boyfriend.tv",
+      "cdn.boyfriend.tv",
+      "cdn77.boyfriend.tv",
+      "cc.boyfriend.tv",
       "boyfriendtv.com",
       "*.boyfriendtv.com",
       "cdn.boyfriendtv.com",
-      "*.cdn.boyfriendtv.com"
+      "*.cdn.boyfriendtv.com",
+      "cdn77-t.boyfriendtv.com"
     ]
-  }
+  },
+  "settings": [
+    {
+      "name": "cookie",
+      "type": "STRING",
+      "displayName": "Cookie Header",
+      "description": "Optional Cookie header value from your browser if BoyfriendTV login is blocked by a Cloudflare or age-verification challenge."
+    }
+  ]
 }

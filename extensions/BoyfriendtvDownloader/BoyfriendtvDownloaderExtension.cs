@@ -6,6 +6,7 @@ using Cove.Core.DTOs;
 using Cove.Plugins;
 using Cove.Sdk;
 using KariDownloads.Shared;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace BoyfriendtvDownloader;
@@ -14,7 +15,15 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
 {
     public const string PrimaryDownloaderId = "karinauts.downloaders.boyfriendtv.video";
     public const string StudioName = "BoyFriendTV";
-    private static readonly string[] SupportedDomains = ["boyfriendtv.com"];
+    private static readonly string[] SupportedDomains = BoyfriendtvAuthHelper.SupportedDomains;
+
+    private static readonly Regex VideoOrEmbedPathRegex = new(
+        @"^/(?:[a-z]{2}/)?(?:videos|embed)/",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex VideoIdRegex = new(
+        @"/(?:videos|embed)/(?<id>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex MediaDefinitionsRegex = new(
         @"(?is)mediaDefinitions\s*[:=]\s*(?<json>\[.*?\])\s*[,;]",
@@ -24,17 +33,21 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         @"(?is)flashvars_\d+\s*=\s*(?<json>\{.*?\});",
         RegexOptions.Compiled);
 
+    private static readonly Regex PlayerConfigSourcesRegex = new(
+        @"(?is)sources\s*:\s*(?<json>\{[^{}]*\})",
+        RegexOptions.Compiled);
+
     private static readonly Regex VideoUrlPropertyRegex = new(
         @"(?is)""videoUrl""\s*:\s*""(?<url>[^""]+)""",
         RegexOptions.Compiled);
 
     private static readonly Regex PerformerAnchorRegex = new(
-        @"href=""/pornstars/[^""]+/videos/""[^>]*>(?<name>[^<]+)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+(?:/videos)?/['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex TagAnchorRegex = new(
-        @"href=""/tags/[^""]+""[^>]*>(?<name>[^<]+)</a>",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        RegexOptions.Compiled);
 
     private static readonly Regex TitleSuffixRegex = new(
         @"\s*(?:\||-)\s*BoyFriendTV(?:\.com)?\s*$",
@@ -43,22 +56,31 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (ResolvedMediaPage Page, DateTime Expiry)> _pageCache =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly BoyfriendtvAuthHelper _auth = new();
     private IServiceProvider? _services;
+    private IConfiguration? _configuration;
 
     private static readonly DownloaderDescriptor PrimaryDescriptor = new(
         PrimaryDownloaderId,
         "BoyfriendTV Downloader",
         DownloaderEntity.Video,
-        ["https://boyfriendtv.com/*", "https://*.boyfriendtv.com/*"],
+        [
+            "https://boyfriend.tv/*",
+            "https://*.boyfriend.tv/*",
+            "https://boyfriendtv.com/*",
+            "https://*.boyfriendtv.com/*"
+        ],
         DownloaderCapabilities.InlineMetadata | DownloaderCapabilities.MultiQuality);
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+        _configuration = context.Configuration;
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _services = services;
+        _configuration ??= services.GetService<IConfiguration>();
         return Task.CompletedTask;
     }
 
@@ -95,7 +117,17 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             throw new InvalidOperationException($"Unsupported URL for BoyfriendTV Downloader: {request.Url}");
 
         host.ReportProgress(5.0, "Inspecting BoyfriendTV media page...");
-        var pageInfo = await InspectPageAsync(request.Url, host, ct);
+        var client = CreateHttpClient(host);
+        var sessionHeaders = await _auth.GetSessionHeadersAsync(
+            client,
+            request.Url,
+            _services,
+            _configuration,
+            Id ?? PrimaryDownloaderId,
+            Name ?? nameof(BoyfriendtvDownloaderExtension),
+            ct);
+
+        var pageInfo = await InspectPageAsync(request.Url, client, sessionHeaders, ct);
 
         var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
             ?? throw new InvalidOperationException($"Could not resolve a suitable video stream for {request.Url}");
@@ -104,12 +136,21 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title) + extension;
         var localFileName = "downloaded" + extension;
 
+        var downloadHeaders = new Dictionary<string, string>(sessionHeaders, StringComparer.OrdinalIgnoreCase)
+        {
+            ["Referer"] = pageInfo.PageUrl
+        };
+
         var localPath = await DownloaderUtilities.DownloadToTempFileAsync(
-            CreateHttpClient(host),
+            client,
             selectedStream.VideoUrl,
             host,
             localFileName,
-            ct);
+            ct,
+            headers: downloadHeaders);
+
+        var codeMatch = VideoIdRegex.Match(request.Url);
+        var code = codeMatch.Success ? codeMatch.Groups["id"].Value : null;
 
         host.ReportProgress(100.0, "Completed download.");
         return new DownloaderResult(
@@ -118,6 +159,7 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             InlineVideoMetadata: new ScrapedVideoDto
             {
                 Title = pageInfo.Title,
+                Code = code,
                 Details = pageInfo.Description,
                 Date = pageInfo.Date,
                 Urls = [request.SourceUrl ?? request.Url],
@@ -131,14 +173,25 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
     public static bool IsSupportedUrl(string? url)
     {
         return DownloaderUtilities.IsHttpUrl(url)
-            && DownloaderUtilities.IsAnyHost(url, SupportedDomains);
+            && DownloaderUtilities.IsAnyHost(url, SupportedDomains)
+            && Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            && VideoOrEmbedPathRegex.IsMatch(uri.AbsolutePath);
     }
 
     internal async Task<ResolvedMediaPage?> TryInspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
         try
         {
-            return await InspectPageAsync(url, host, ct);
+            var client = CreateHttpClient(host);
+            var headers = await _auth.GetSessionHeadersAsync(
+                client,
+                url,
+                _services,
+                _configuration,
+                Id ?? PrimaryDownloaderId,
+                Name ?? nameof(BoyfriendtvDownloaderExtension),
+                ct);
+            return await InspectPageAsync(url, client, headers, ct);
         }
         catch
         {
@@ -148,21 +201,43 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
 
     internal async Task<ResolvedMediaPage> InspectPageAsync(string url, IDownloaderHost? host, CancellationToken ct)
     {
-        if (_pageCache.TryGetValue(url, out var entry) && entry.Expiry > DateTime.UtcNow)
+        var client = CreateHttpClient(host);
+        var headers = await _auth.GetSessionHeadersAsync(
+            client,
+            url,
+            _services,
+            _configuration,
+            Id ?? PrimaryDownloaderId,
+            Name ?? nameof(BoyfriendtvDownloaderExtension),
+            ct);
+        return await InspectPageAsync(url, client, headers, ct);
+    }
+
+    private async Task<ResolvedMediaPage> InspectPageAsync(
+        string url,
+        HttpClient client,
+        IReadOnlyDictionary<string, string> headers,
+        CancellationToken ct)
+    {
+        var cookieKey = headers.TryGetValue("Cookie", out var c) ? c : string.Empty;
+        var cacheKey = $"{url}|{cookieKey}";
+        if (_pageCache.TryGetValue(cacheKey, out var entry) && entry.Expiry > DateTime.UtcNow)
             return entry.Page;
 
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
         request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
-        request.Headers.TryAddWithoutValidation("Cookie", "age_verified=1");
-        request.Headers.Referrer = new Uri("https://www.boyfriendtv.com/");
+        foreach (var (key, value) in headers)
+            request.Headers.TryAddWithoutValidation(key, value);
 
-        using var response = await CreateHttpClient(host).SendAsync(request, ct);
+        using var response = await client.SendAsync(request, ct);
+        var html = await response.Content.ReadAsStringAsync(ct);
+
+        BoyfriendtvAuthHelper.ThrowIfBlockedOrAgeGated(response.StatusCode, html, url);
         response.EnsureSuccessStatusCode();
 
-        var html = await response.Content.ReadAsStringAsync(ct);
         var parsed = ParsePage(html, url);
-        _pageCache[url] = (parsed, DateTime.UtcNow.AddMinutes(5));
+        _pageCache[cacheKey] = (parsed, DateTime.UtcNow.AddMinutes(5));
         return parsed;
     }
 
@@ -256,7 +331,16 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             }
         }
 
-        // 3. Fallback: videoUrl regex property matches
+        // 3. Try playerConfig.sources object (e.g. {"hlsAuto": "https://cdn.boyfriend.tv/..."} or {"mp4": ...})
+        if (streams.Count == 0)
+        {
+            foreach (Match sourcesMatch in PlayerConfigSourcesRegex.Matches(html))
+            {
+                ParsePlayerConfigSourcesJson(sourcesMatch.Groups["json"].Value, pageUrl, streams);
+            }
+        }
+
+        // 4. Fallback: videoUrl regex property matches
         if (streams.Count == 0)
         {
             foreach (Match match in VideoUrlPropertyRegex.Matches(html))
@@ -271,6 +355,43 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         }
 
         return streams;
+    }
+
+    private static void ParsePlayerConfigSourcesJson(string json, string pageUrl, List<MediaStream> streams)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return;
+
+            foreach (var prop in doc.RootElement.EnumerateObject())
+            {
+                if (prop.Value.ValueKind != JsonValueKind.String)
+                    continue;
+
+                var normalizedUrl = NormalizeMediaUrl(prop.Value.GetString(), pageUrl);
+                if (string.IsNullOrWhiteSpace(normalizedUrl) || streams.Any(s => s.VideoUrl == normalizedUrl))
+                    continue;
+
+                var key = prop.Name;
+                var isHls = key.Contains("hls", StringComparison.OrdinalIgnoreCase)
+                    || normalizedUrl.Contains(".m3u8", StringComparison.OrdinalIgnoreCase)
+                    || normalizedUrl.Contains("/media=hls", StringComparison.OrdinalIgnoreCase);
+
+                int? height = int.TryParse(key.TrimEnd('p', 'P'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                    ? parsed
+                    : null;
+
+                var format = isHls ? "hls" : "mp4";
+                var qualityId = height != null ? height.Value.ToString(CultureInfo.InvariantCulture) : key;
+                streams.Add(new MediaStream(normalizedUrl, qualityId, format, height, key.Equals("hlsAuto", StringComparison.OrdinalIgnoreCase)));
+            }
+        }
+        catch (JsonException)
+        {
+            // Ignore malformed sources JSON
+        }
     }
 
     private static void ParseMediaDefinitionsJson(string json, string pageUrl, List<MediaStream> streams)
