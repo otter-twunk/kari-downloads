@@ -547,8 +547,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         if (!IsFfmpegAvailable(ffmpegBinary))
         {
             throw new InvalidOperationException(
-                "FFmpeg is required to download BoyfriendTV HLS streams, but ffmpeg was not found. " +
-                "Install FFmpeg or configure ffmpegPath in extension settings.");
+                $"FFmpeg is required to download BoyfriendTV HLS streams, but '{ffmpegBinary}' could not be run. " +
+                "Set Cove's FFmpeg path (Settings), set the extension's ffmpegPath setting, or add FFmpeg to PATH.");
         }
 
         if (File.Exists(outputMp4Path))
@@ -655,36 +655,7 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
     }
 
     internal static string ResolveFfmpegPath(IConfiguration? configuration)
-    {
-        var configured = configuration?["ffmpegPath"]
-            ?? configuration?[$"Extensions:{PrimaryDownloaderId}:ffmpegPath"];
-        if (!string.IsNullOrWhiteSpace(configured) && (File.Exists(configured) || !configured.Contains(Path.DirectorySeparatorChar)))
-            return configured.Trim();
-
-        var exeName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
-        string[] candidates = OperatingSystem.IsWindows()
-            ? [
-                Path.Combine(Directory.GetCurrentDirectory(), "ffmpeg", exeName),
-                Path.Combine(AppContext.BaseDirectory, "ffmpeg", exeName),
-                @"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
-                @"C:\ffmpeg\bin\ffmpeg.exe"
-              ]
-            : [
-                Path.Combine(Directory.GetCurrentDirectory(), "ffmpeg", exeName),
-                Path.Combine(AppContext.BaseDirectory, "ffmpeg", exeName),
-                "/opt/homebrew/bin/ffmpeg",
-                "/usr/local/bin/ffmpeg",
-                "/usr/bin/ffmpeg"
-              ];
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-                return candidate;
-        }
-
-        return exeName;
-    }
+        => KariDownloads.Shared.FfmpegLocator.Resolve(configuration, "karinauts.downloaders.boyfriendtv");
 
     private static bool IsFfmpegAvailable(string ffmpegBinary)
     {
