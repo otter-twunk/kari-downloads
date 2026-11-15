@@ -85,6 +85,48 @@ public sealed class BoyfriendtvDownloaderTests
     }
 
     [Fact]
+    public async Task DownloadAsync_PageWithCloudflareBackgroundBeacon_IsNotTreatedAsChallenge()
+    {
+        // Live boyfriend.tv pages (HTTP 200) embed Cloudflare's precursor/jsd beacon scripts.
+        const string beacon =
+            "<script>var u='/cdn-cgi/challenge-platform/scripts/precursor/main.js?ray=abc';</script>" +
+            "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script></body>";
+        var html = RealisticPageHtml.Replace("</body>", beacon, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("challenge-platform", html);
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(CanonicalVideoPageUrl, html)
+            .MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                SampleVideoPageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriendtv.com", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
+    }
+
+    [Theory]
+    [InlineData("<html><head><title>Just a moment...</title></head><body><script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script></body></html>", true)]
+    [InlineData("<html><script>window._cf_chl_opt={cvId:'3'};</script></html>", true)]
+    [InlineData("<html><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></html>", true)]
+    [InlineData("<html><script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script><script>var playerConfig={};</script></html>", false)]
+    public void IsCloudflareChallenge_DistinguishesInterstitialFromBackgroundBeacon(string html, bool expected)
+    {
+        var helper = typeof(BoyfriendtvDownloaderExtension).Assembly.GetType("KariDownloads.Shared.BoyfriendtvAuthHelper", throwOnError: true)!;
+        var method = helper.GetMethod("IsCloudflareChallenge")!;
+        Assert.Equal(expected, (bool)method.Invoke(null, [System.Net.HttpStatusCode.OK, html])!);
+    }
+
+    [Fact]
     public async Task DownloadAsync_DownloadsDefaultHighestMp4_AndReportsMetadata()
     {
         using var harness = new FakeDownloaderHost()

@@ -1,7 +1,7 @@
 {
   "id": "karinauts.downloaders.boyfriendtv",
   "name": "BoyfriendTV Downloader",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Downloads video media and inline metadata from boyfriend.tv and boyfriendtv.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",

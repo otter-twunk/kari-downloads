@@ -1,7 +1,7 @@
 {
   "id": "karinauts.scrapers.boyfriendtv",
   "name": "BoyfriendTV Scraper",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Scrapes video and performer metadata and search candidates from boyfriend.tv and boyfriendtv.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",

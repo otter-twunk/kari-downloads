@@ -185,13 +185,24 @@ internal sealed class BoyfriendtvAuthHelper
         && !text.Contains("See more", StringComparison.OrdinalIgnoreCase)
         && text.Length <= 80;
 
+    private static bool HasVideoContent(string html) =>
+        html.Contains("playerConfig", StringComparison.OrdinalIgnoreCase)
+        || html.Contains("mediaDefinitions", StringComparison.OrdinalIgnoreCase)
+        || html.Contains("\"@type\":\"VideoObject\"", StringComparison.OrdinalIgnoreCase)
+        || html.Contains("\"@type\": \"VideoObject\"", StringComparison.OrdinalIgnoreCase);
+
     public static bool IsCloudflareChallenge(HttpStatusCode statusCode, string html)
     {
         if (string.IsNullOrWhiteSpace(html))
             return statusCode is HttpStatusCode.Forbidden or HttpStatusCode.ServiceUnavailable;
 
+        // Cloudflare injects background beacons (/cdn-cgi/challenge-platform/scripts/precursor|jsd/...)
+        // into normal pages, so that path alone is not a challenge. A page carrying real content never is.
+        if (HasVideoContent(html))
+            return false;
+
         return html.Contains("cf_chl_opt", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("/cdn-cgi/challenge-platform/", StringComparison.OrdinalIgnoreCase)
+            || html.Contains("/cdn-cgi/challenge-platform/h/", StringComparison.OrdinalIgnoreCase)
             || (html.Contains("<title>Just a moment...</title>", StringComparison.OrdinalIgnoreCase)
                 && html.Contains("challenges.cloudflare.com", StringComparison.OrdinalIgnoreCase));
     }
@@ -202,13 +213,8 @@ internal sealed class BoyfriendtvAuthHelper
             return false;
 
         // If the page already has a video player or structured VideoObject/ProfilePage, it's not a wall.
-        if (html.Contains("playerConfig", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("mediaDefinitions", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("\"@type\":\"VideoObject\"", StringComparison.OrdinalIgnoreCase)
-            || html.Contains("\"@type\": \"VideoObject\"", StringComparison.OrdinalIgnoreCase))
-        {
+        if (HasVideoContent(html))
             return false;
-        }
 
         return html.Contains("Age verification required", StringComparison.OrdinalIgnoreCase)
             || html.Contains("verify your age", StringComparison.OrdinalIgnoreCase)
