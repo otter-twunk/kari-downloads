@@ -5,6 +5,7 @@ using Cove.Core.DTOs;
 using Cove.Plugins;
 using Cove.Sdk;
 using KariDownloads.Shared;
+using KariDownloads.Shared.Cloudflare;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -19,16 +20,29 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
 
     private static readonly string[] SupportedDomains = BoyfriendtvAuthHelper.SupportedDomains;
 
+    private static readonly CloudflareSitePolicy CloudflarePolicy = new()
+    {
+        ResolverEnabled = true,
+        SessionKey = "boyfriendtv",
+        AllowedHosts =
+        [
+            "boyfriend.tv",
+            "*.boyfriend.tv",
+            "boyfriendtv.com",
+            "*.boyfriendtv.com"
+        ]
+    };
+
     private static readonly Regex VideoIdRegex = new(
         @"/videos/(?<id>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex PerformerAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+(?:/videos)?/['""][^>]*>(?<name>.*?)</a>",
+        @"(?is)<a\b[^>]*href=['"](?:https?://[^'"]+)?/pornstars/[^'"]+(?:/videos)?/['"][^>]*>(?<name>.*?)</a>",
         RegexOptions.Compiled);
 
     private static readonly Regex TagAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>(?<name>.*?)</a>",
+        @"(?is)<a\b[^>]*href=['"](?:https?://[^'"]+)?/tags/[^'"]+['"][^>]*>(?<name>.*?)</a>",
         RegexOptions.Compiled);
 
     private static readonly Regex VideoTitleSuffixRegex = new(
@@ -44,11 +58,11 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex VideoLinkRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?<href>(?:https?://[^'""]+)?/videos/\d+/[^'""]*)['""][^>]*>(?<text>.*?)</a>",
+        @"(?is)<a\b[^>]*href=['"](?<href>(?:https?://[^'"]+)?/videos/\d+/[^'"]*)['"][^>]*>(?<text>.*?)</a>",
         RegexOptions.Compiled);
 
     private static readonly Regex PerformerLinkRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?<href>(?:https?://[^'""]+)?/pornstars/[^'""]+/)['""][^>]*>(?<text>.*?)</a>",
+        @"(?is)<a\b[^>]*href=['"](?<href>(?:https?://[^'"]+)?/pornstars/[^'"]+/)['"][^>]*>(?<text>.*?)</a>",
         RegexOptions.Compiled);
 
     private readonly BoyfriendtvAuthHelper _auth = new();
@@ -268,7 +282,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         string? hairColor = null;
         string? ethnicity = null;
 
-        // 1. Try JSON-LD Person or ProfilePage.mainEntity block
         foreach (var block in DownloaderUtilities.ExtractJsonLdBlocks(html))
         {
             using (block)
@@ -285,7 +298,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             }
         }
 
-        // 2. OpenGraph / Title fallback
         name ??= ScraperUtilities.ExtractMetaContent(html, "og:title")
             ?? ScraperUtilities.ExtractMetaContent(html, "twitter:title")
             ?? DownloaderUtilities.ExtractHtmlTitle(html);
@@ -293,7 +305,6 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
         if (!string.IsNullOrWhiteSpace(name))
             name = CleanPerformerName(name);
 
-        // 3. URL slug fallback if name is still empty
         if (string.IsNullOrWhiteSpace(name))
             name = SlugToPerformerName(sourceUrl) ?? fallbackInput?.Name ?? "Unknown Performer";
 
@@ -345,7 +356,7 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             var code = codeMatch.Success ? codeMatch.Groups["id"].Value : null;
 
             string? thumb = null;
-            var imgMatch = Regex.Match(match.Groups["text"].Value, @"(?is)<img\b[^>]*\b(?:data-src|src)=['""](?<src>[^'""]+)['""]");
+            var imgMatch = Regex.Match(match.Groups["text"].Value, @"(?is)<img\b[^>]*\b(?:data-src|src)=['"](?<src>[^'"]+)['"]");
             if (imgMatch.Success)
             {
                 var src = imgMatch.Groups["src"].Value.Trim();
@@ -441,18 +452,64 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             Name ?? nameof(BoyfriendtvScraperExtension),
             ct);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.TryParseAdd(ScraperUtilities.DefaultUserAgent);
-        request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+        var resilience = _services?.GetService<ICloudflareResilienceService>();
+        if (resilience is not null)
+        {
+            var result = await resilience.GetAsync(
+                new CloudflareRequestContext(
+                    new Uri(url),
+                    Id ?? VideoScraperId,
+                    "boyfriendtv",
+                    Headers: new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["User-Agent"] = ScraperUtilities.DefaultUserAgent,
+                        ["Accept-Language"] = "en-US,en;q=0.9"
+                    },
+                    Cookies: ParseCookieHeader(headers.TryGetValue("Cookie", out var cookie) ? cookie : string.Empty)),
+                CloudflarePolicy,
+                ct);
+
+            if (result.Response is null)
+                throw new InvalidOperationException(result.Message ?? $"Request failed for {url}.");
+
+            using var response = result.Response;
+            var html = await response.Content.ReadAsStringAsync(ct);
+
+            if (result.Outcome is not (CloudflareOutcome.Success or CloudflareOutcome.ChallengeSolved))
+                throw new InvalidOperationException(result.Message ?? $"Request failed for {url}.");
+
+            response.EnsureSuccessStatusCode();
+            return html;
+        }
+
+        using var directRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        directRequest.Headers.UserAgent.TryParseAdd(ScraperUtilities.DefaultUserAgent);
+        directRequest.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
         foreach (var (key, value) in headers)
-            request.Headers.TryAddWithoutValidation(key, value);
+            directRequest.Headers.TryAddWithoutValidation(key, value);
 
-        using var response = await client.SendAsync(request, ct);
-        var html = await response.Content.ReadAsStringAsync(ct);
+        using var directResponse = await client.SendAsync(directRequest, ct);
+        var directHtml = await directResponse.Content.ReadAsStringAsync(ct);
 
-        BoyfriendtvAuthHelper.ThrowIfBlockedOrAgeGated(response.StatusCode, html, url);
-        response.EnsureSuccessStatusCode();
-        return html;
+        BoyfriendtvAuthHelper.ThrowIfBlockedOrAgeGated(directResponse.StatusCode, directHtml, url);
+        directResponse.EnsureSuccessStatusCode();
+        return directHtml;
+    }
+
+    private static IReadOnlyDictionary<string, string> ParseCookieHeader(string cookieHeader)
+    {
+        var cookies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pair in cookieHeader.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var separator = pair.IndexOf('=');
+            if (separator <= 0)
+                continue;
+
+            cookies[pair[..separator].Trim()] = pair[(separator + 1)..].Trim();
+        }
+
+        return cookies;
     }
 
     private static bool TryFindPersonElement(JsonElement root, out JsonElement personElem)
