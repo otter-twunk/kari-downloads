@@ -422,8 +422,14 @@ public sealed class BoyfriendtvScraperExtension : CoveExtensionBase, IScraperPro
             SafeExtensionName,
             ct);
 
+        var userAgent = BoyfriendtvAuthHelper.GetConfiguredUserAgent(
+            _configuration,
+            SafeExtensionId,
+            SafeExtensionName,
+            ScraperUtilities.DefaultUserAgent);
+
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.TryParseAdd(ScraperUtilities.DefaultUserAgent);
+        request.Headers.UserAgent.TryParseAdd(userAgent);
         request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
         foreach (var (key, value) in headers)
             request.Headers.TryAddWithoutValidation(key, value);

@@ -444,6 +444,18 @@ internal sealed class BoyfriendtvAuthHelper
         return (actionUrl, fields);
     }
 
+    public static string GetConfiguredUserAgent(IConfiguration? configuration, string extensionId, string extensionName, string fallback)
+    {
+        if (configuration == null)
+            return fallback;
+
+        var raw = configuration["userAgent"]
+            ?? configuration[$"{extensionId}:userAgent"]
+            ?? configuration[$"{extensionName}:userAgent"];
+
+        return string.IsNullOrWhiteSpace(raw) ? fallback : raw.Trim();
+    }
+
     private static string? GetConfiguredCookie(IConfiguration? configuration, string extensionId, string extensionName)
     {
         if (configuration == null)

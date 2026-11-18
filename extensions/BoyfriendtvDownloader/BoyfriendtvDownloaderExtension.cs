@@ -239,12 +239,18 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         if (_pageCache.TryGetValue(cacheKey, out var entry) && entry.Expiry > DateTime.UtcNow)
             return entry.Page;
 
+        var userAgent = BoyfriendtvAuthHelper.GetConfiguredUserAgent(
+            _configuration,
+            SafeExtensionId,
+            SafeExtensionName,
+            DownloaderUtilities.DefaultUserAgent);
+
         using var response = await BoyfriendtvAuthHelper.SendWithRateLimitRetryAsync(
             client,
             () =>
             {
                 var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
+                request.Headers.UserAgent.TryParseAdd(userAgent);
                 request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
                 foreach (var (key, value) in headers)
                     request.Headers.TryAddWithoutValidation(key, value);
@@ -556,9 +562,15 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
 
         host.ReportProgress(12.0, "Streaming and remuxing BoyfriendTV HLS via FFmpeg...");
 
+        var userAgent = BoyfriendtvAuthHelper.GetConfiguredUserAgent(
+            _configuration,
+            SafeExtensionId,
+            SafeExtensionName,
+            DownloaderUtilities.DefaultUserAgent);
+
         var origin = BoyfriendtvAuthHelper.GetOrigin(pageUrl);
         var headerSb = new StringBuilder();
-        headerSb.Append($"User-Agent: {DownloaderUtilities.DefaultUserAgent}\r\n");
+        headerSb.Append($"User-Agent: {userAgent}\r\n");
         headerSb.Append($"Origin: {origin}\r\n");
         headerSb.Append($"Referer: {pageUrl}\r\n");
         foreach (var (k, v) in headers)

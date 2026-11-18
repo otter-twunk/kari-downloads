@@ -47,6 +47,12 @@
       "type": "STRING",
       "displayName": "Cookie Header",
       "description": "Optional Cookie header from a signed-in, age-verified boyfriend.tv browser session. Needed because BoyfriendTV login is behind a Cloudflare challenge; you can instead paste it into the Password field of the BoyfriendTV login on the Downloads page."
+    },
+    {
+      "name": "userAgent",
+      "type": "STRING",
+      "displayName": "User-Agent Header",
+      "description": "Optional browser User-Agent matching the session that generated your Cookie Header (Cloudflare cf_clearance cookies are bound to the originating User-Agent)."
     }
   ]
 }
