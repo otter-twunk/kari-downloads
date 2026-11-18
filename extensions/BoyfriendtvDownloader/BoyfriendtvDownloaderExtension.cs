@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Cove.Core.DTOs;
@@ -39,14 +41,6 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
 
     private static readonly Regex VideoUrlPropertyRegex = new(
         @"(?is)""videoUrl""\s*:\s*""(?<url>[^""]+)""",
-        RegexOptions.Compiled);
-
-    private static readonly Regex PerformerAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/pornstars/[^'""]+(?:/videos)?/['""][^>]*>(?<name>.*?)</a>",
-        RegexOptions.Compiled);
-
-    private static readonly Regex TagAnchorRegex = new(
-        @"(?is)<a\b[^>]*href=['""](?:https?://[^'""]+)?/tags/[^'""]+['""][^>]*>(?<name>.*?)</a>",
         RegexOptions.Compiled);
 
     private static readonly Regex TitleSuffixRegex = new(
@@ -123,8 +117,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             request.Url,
             _services,
             _configuration,
-            Id ?? PrimaryDownloaderId,
-            Name ?? nameof(BoyfriendtvDownloaderExtension),
+            SafeExtensionId,
+            SafeExtensionName,
             ct);
 
         var pageInfo = await InspectPageAsync(request.Url, client, sessionHeaders, ct);
@@ -132,7 +126,11 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         var selectedStream = SelectStream(pageInfo.Streams, request.QualityId, request.MaxHeight)
             ?? throw new InvalidOperationException($"Could not resolve a suitable video stream for {request.Url}");
 
-        var extension = DownloaderUtilities.EnsureExtensionFromUrl(selectedStream.VideoUrl, ".mp4");
+        var isHls = selectedStream.Format.Equals("hls", StringComparison.OrdinalIgnoreCase)
+            || selectedStream.VideoUrl.Contains(".m3u8", StringComparison.OrdinalIgnoreCase)
+            || selectedStream.VideoUrl.Contains("/media=hls", StringComparison.OrdinalIgnoreCase);
+
+        var extension = isHls ? ".mp4" : DownloaderUtilities.EnsureExtensionFromUrl(selectedStream.VideoUrl, ".mp4");
         var originalFileName = DownloaderUtilities.SanitizeFileName(pageInfo.Title) + extension;
         var localFileName = "downloaded" + extension;
 
@@ -141,13 +139,29 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             ["Referer"] = pageInfo.PageUrl
         };
 
-        var localPath = await DownloaderUtilities.DownloadToTempFileAsync(
-            client,
-            selectedStream.VideoUrl,
-            host,
-            localFileName,
-            ct,
-            headers: downloadHeaders);
+        string localPath;
+        if (isHls)
+        {
+            Directory.CreateDirectory(host.TempDirectory);
+            var destinationPath = Path.Combine(host.TempDirectory, localFileName);
+            localPath = await DownloadHlsWithFfmpegAsync(
+                selectedStream.VideoUrl,
+                destinationPath,
+                pageInfo.PageUrl,
+                downloadHeaders,
+                host,
+                ct);
+        }
+        else
+        {
+            localPath = await DownloaderUtilities.DownloadToTempFileAsync(
+                client,
+                selectedStream.VideoUrl,
+                host,
+                localFileName,
+                ct,
+                headers: downloadHeaders);
+        }
 
         var codeMatch = VideoIdRegex.Match(request.Url);
         var code = codeMatch.Success ? codeMatch.Groups["id"].Value : null;
@@ -188,8 +202,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
                 url,
                 _services,
                 _configuration,
-                Id ?? PrimaryDownloaderId,
-                Name ?? nameof(BoyfriendtvDownloaderExtension),
+                SafeExtensionId,
+                SafeExtensionName,
                 ct);
             return await InspectPageAsync(url, client, headers, ct);
         }
@@ -207,8 +221,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             url,
             _services,
             _configuration,
-            Id ?? PrimaryDownloaderId,
-            Name ?? nameof(BoyfriendtvDownloaderExtension),
+            SafeExtensionId,
+            SafeExtensionName,
             ct);
         return await InspectPageAsync(url, client, headers, ct);
     }
@@ -219,18 +233,30 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
         IReadOnlyDictionary<string, string> headers,
         CancellationToken ct)
     {
+        url = BoyfriendtvAuthHelper.CanonicalizePageUrl(url);
         var cookieKey = headers.TryGetValue("Cookie", out var c) ? c : string.Empty;
         var cacheKey = $"{url}|{cookieKey}";
         if (_pageCache.TryGetValue(cacheKey, out var entry) && entry.Expiry > DateTime.UtcNow)
             return entry.Page;
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.TryParseAdd(DownloaderUtilities.DefaultUserAgent);
-        request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
-        foreach (var (key, value) in headers)
-            request.Headers.TryAddWithoutValidation(key, value);
+        var userAgent = BoyfriendtvAuthHelper.GetConfiguredUserAgent(
+            _configuration,
+            SafeExtensionId,
+            SafeExtensionName,
+            DownloaderUtilities.DefaultUserAgent);
 
-        using var response = await client.SendAsync(request, ct);
+        using var response = await BoyfriendtvAuthHelper.SendWithRateLimitRetryAsync(
+            client,
+            () =>
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.UserAgent.TryParseAdd(userAgent);
+                request.Headers.AcceptLanguage.TryParseAdd("en-US,en;q=0.9");
+                foreach (var (key, value) in headers)
+                    request.Headers.TryAddWithoutValidation(key, value);
+                return request;
+            },
+            ct);
         var html = await response.Content.ReadAsStringAsync(ct);
 
         BoyfriendtvAuthHelper.ThrowIfBlockedOrAgeGated(response.StatusCode, html, url);
@@ -252,21 +278,8 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             ? CleanTitle(structured.Title)
             : cleanTitle;
 
-        var performers = new List<string>(structured.PerformerNames);
-        foreach (Match match in PerformerAnchorRegex.Matches(html))
-        {
-            var name = DownloaderUtilities.CleanHtmlFragment(match.Groups["name"].Value);
-            if (!string.IsNullOrWhiteSpace(name) && !performers.Contains(name, StringComparer.OrdinalIgnoreCase))
-                performers.Add(name);
-        }
-
-        var tags = new List<string>(structured.TagNames);
-        foreach (Match match in TagAnchorRegex.Matches(html))
-        {
-            var tag = DownloaderUtilities.CleanHtmlFragment(match.Groups["name"].Value);
-            if (!string.IsNullOrWhiteSpace(tag) && !tags.Contains(tag, StringComparer.OrdinalIgnoreCase))
-                tags.Add(tag);
-        }
+        var (performers, tags) = BoyfriendtvAuthHelper.ExtractVideoPerformersAndTags(
+            html, structured.PerformerNames, structured.TagNames, DownloaderUtilities.CleanHtmlFragment);
 
         var streams = ExtractMediaStreams(html, pageUrl);
         if (streams.Count == 0)
@@ -526,6 +539,166 @@ public sealed class BoyfriendtvDownloaderExtension : CoveExtensionBase, IDownloa
             .ThenByDescending(s => s.IsDefault)
             .FirstOrDefault(s => s.Format.Equals("mp4", StringComparison.OrdinalIgnoreCase))
             ?? candidates.FirstOrDefault();
+    }
+
+    private async Task<string> DownloadHlsWithFfmpegAsync(
+        string hlsUrl,
+        string outputMp4Path,
+        string pageUrl,
+        IReadOnlyDictionary<string, string> headers,
+        IDownloaderHost host,
+        CancellationToken ct)
+    {
+        var ffmpegBinary = ResolveFfmpegPath(_configuration);
+        if (!IsFfmpegAvailable(ffmpegBinary))
+        {
+            throw new InvalidOperationException(
+                $"FFmpeg is required to download BoyfriendTV HLS streams, but '{ffmpegBinary}' could not be run. " +
+                "Set Cove's FFmpeg path (Settings), set the extension's ffmpegPath setting, or add FFmpeg to PATH.");
+        }
+
+        if (File.Exists(outputMp4Path))
+            File.Delete(outputMp4Path);
+
+        host.ReportProgress(12.0, "Streaming and remuxing BoyfriendTV HLS via FFmpeg...");
+
+        var userAgent = BoyfriendtvAuthHelper.GetConfiguredUserAgent(
+            _configuration,
+            SafeExtensionId,
+            SafeExtensionName,
+            DownloaderUtilities.DefaultUserAgent);
+
+        var origin = BoyfriendtvAuthHelper.GetOrigin(pageUrl);
+        var headerSb = new StringBuilder();
+        headerSb.Append($"User-Agent: {userAgent}\r\n");
+        headerSb.Append($"Origin: {origin}\r\n");
+        headerSb.Append($"Referer: {pageUrl}\r\n");
+        foreach (var (k, v) in headers)
+        {
+            if (!k.Equals("Origin", StringComparison.OrdinalIgnoreCase) && !k.Equals("Referer", StringComparison.OrdinalIgnoreCase))
+                headerSb.Append($"{k}: {v}\r\n");
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = ffmpegBinary,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            RedirectStandardOutput = false
+        };
+
+        psi.ArgumentList.Add("-y");
+        psi.ArgumentList.Add("-loglevel");
+        psi.ArgumentList.Add("info");
+        psi.ArgumentList.Add("-headers");
+        psi.ArgumentList.Add(headerSb.ToString());
+        psi.ArgumentList.Add("-reconnect");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_at_eof");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_streamed");
+        psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_delay_max");
+        psi.ArgumentList.Add("5");
+        psi.ArgumentList.Add("-analyzeduration");
+        psi.ArgumentList.Add("20000000");
+        psi.ArgumentList.Add("-probesize");
+        psi.ArgumentList.Add("20000000");
+        psi.ArgumentList.Add("-i");
+        psi.ArgumentList.Add(hlsUrl);
+        psi.ArgumentList.Add("-map");
+        psi.ArgumentList.Add("0:v:0");
+        psi.ArgumentList.Add("-map");
+        psi.ArgumentList.Add("0:a:0?");
+        psi.ArgumentList.Add("-c");
+        psi.ArgumentList.Add("copy");
+        psi.ArgumentList.Add("-bsf:a");
+        psi.ArgumentList.Add("aac_adtstoasc");
+        psi.ArgumentList.Add("-movflags");
+        psi.ArgumentList.Add("+faststart");
+        psi.ArgumentList.Add(outputMp4Path);
+
+        using var process = new Process { StartInfo = psi };
+        if (!process.Start())
+            throw new InvalidOperationException($"Failed to start FFmpeg process ({ffmpegBinary}) for HLS download.");
+
+        var lastStderrLines = new Queue<string>(8);
+        var readErrorTask = Task.Run(async () =>
+        {
+            while (!process.HasExited && !ct.IsCancellationRequested)
+            {
+                var line = await process.StandardError.ReadLineAsync(ct);
+                if (line == null) break;
+
+                if (lastStderrLines.Count >= 8)
+                    lastStderrLines.Dequeue();
+                lastStderrLines.Enqueue(line);
+
+                if (line.Contains("time=", StringComparison.Ordinal))
+                    host.ReportProgress(50.0, "Remuxing BoyfriendTV HLS stream...");
+            }
+        }, ct);
+
+        try
+        {
+            await process.WaitForExitAsync(ct);
+            await readErrorTask;
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                if (!process.HasExited)
+                    process.Kill(entireProcessTree: true);
+            }
+            catch { /* best effort cleanup */ }
+            throw;
+        }
+
+        if (process.ExitCode != 0 || !File.Exists(outputMp4Path) || new FileInfo(outputMp4Path).Length == 0)
+        {
+            var tail = string.Join(" | ", lastStderrLines);
+            throw new InvalidOperationException(
+                $"FFmpeg failed to remux BoyfriendTV HLS stream (exit code {process.ExitCode}): {tail}");
+        }
+
+        return outputMp4Path;
+    }
+
+    internal static string ResolveFfmpegPath(IConfiguration? configuration)
+        => KariDownloads.Shared.FfmpegLocator.Resolve(configuration, "karinauts.downloaders.boyfriendtv");
+
+    private static bool IsFfmpegAvailable(string ffmpegBinary)
+    {
+        try
+        {
+            using var proc = Process.Start(new ProcessStartInfo
+            {
+                FileName = ffmpegBinary,
+                Arguments = "-version",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            });
+            if (proc == null) return false;
+            proc.WaitForExit(3000);
+            return proc.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string SafeExtensionId => TryGetManifestValue(() => Id, PrimaryDownloaderId);
+    private string SafeExtensionName => TryGetManifestValue(() => Name, nameof(BoyfriendtvDownloaderExtension));
+
+    private static string TryGetManifestValue(Func<string> getter, string fallback)
+    {
+        try { return getter(); }
+        catch (InvalidOperationException) { return fallback; }
     }
 
     private HttpClient CreateHttpClient(IDownloaderHost? host = null)
