@@ -17,7 +17,7 @@ import {
   Search,
 } from "@cove/runtime/lucide-react";
 
-type SourceKind = "manifest-feed" | "static-zip" | "github-release";
+type SourceKind = "manifest-feed" | "static-zip" | "gitea-release" | "github-release";
 type StatusFilter = "all" | "updates" | "installed" | "available";
 type CategoryFilter = "all" | "downloaders" | "scrapers" | "tools";
 
@@ -273,8 +273,8 @@ export function ExtensionUpdaterPage() {
           kind: newKind,
           label: newLabel.trim() || newUrl.trim(),
           url: newUrl.trim(),
-          tagPrefix: newKind === "github-release" ? newTagPrefix.trim() || null : null,
-          assetPattern: newKind === "github-release" ? newAssetPattern.trim() || null : null,
+          tagPrefix: (newKind === "github-release" || newKind === "gitea-release") ? newTagPrefix.trim() || null : null,
+          assetPattern: (newKind === "github-release" || newKind === "gitea-release") ? newAssetPattern.trim() || null : null,
           enabled: true,
         }),
       });
@@ -338,7 +338,7 @@ export function ExtensionUpdaterPage() {
             Extension Updater
           </h1>
           <p className="text-sm mt-1" style={{ color: "var(--text-secondary)" }}>
-            Check and update extensions from static rolling URLs, GitHub releases, and external feeds.
+            Check and update extensions from Gitea &amp; GitHub manifest feeds, repo releases, and static ZIP URLs.
           </p>
         </div>
 
@@ -405,9 +405,10 @@ export function ExtensionUpdaterPage() {
                 className="w-full px-3 py-2 rounded-lg border text-sm"
                 style={{ background: "var(--bg-elevated)", borderColor: "var(--border-subtle)" }}
               >
+                <option value="manifest-feed">Manifest JSON Feed</option>
+                <option value="gitea-release">Gitea Repo Release</option>
                 <option value="static-zip">Static ZIP URL</option>
                 <option value="github-release">GitHub Repo Release</option>
-                <option value="manifest-feed">Manifest JSON Feed</option>
               </select>
             </div>
 
@@ -427,7 +428,11 @@ export function ExtensionUpdaterPage() {
 
             <div>
               <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>
-                {newKind === "github-release" ? "GitHub Repo (owner/repo or URL)" : "URL"}
+                {newKind === "github-release"
+                  ? "GitHub Repo (owner/repo or URL)"
+                  : newKind === "gitea-release"
+                  ? "Gitea Repo URL (https://host/owner/repo)"
+                  : "URL"}
               </label>
               <input
                 type="text"
@@ -437,8 +442,10 @@ export function ExtensionUpdaterPage() {
                 placeholder={
                   newKind === "github-release"
                     ? "owner/repo"
+                    : newKind === "gitea-release"
+                    ? "https://gitea.tail971353.ts.net/gitea-admin/my-plugin"
                     : newKind === "manifest-feed"
-                    ? "https://.../latest-manifest.json"
+                    ? "https://.../releases/download/latest/latest-manifest.json"
                     : "https://.../extension-latest.zip"
                 }
                 className="w-full px-3 py-2 rounded-lg border text-sm"
@@ -447,7 +454,7 @@ export function ExtensionUpdaterPage() {
             </div>
           </div>
 
-          {newKind === "github-release" && (
+          {(newKind === "github-release" || newKind === "gitea-release") && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs mb-1" style={{ color: "var(--text-secondary)" }}>

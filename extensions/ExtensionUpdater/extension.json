@@ -1,10 +1,10 @@
 {
   "id": "karinauts.tools.extension-updater",
   "name": "Extension Updater",
-  "version": "0.1.2",
-  "description": "Check and update Cove extensions from static URLs, GitHub releases, and external feeds.",
+  "version": "0.2.0",
+  "description": "Check and update Cove extensions from Gitea & GitHub manifest feeds, releases, and static ZIP URLs.",
   "author": "Kari",
-  "url": "https://github.com/otter-twunk/kari-downloads",
+  "url": "https://gitea.tail971353.ts.net/gitea-admin/kari-downloads",
   "categories": [
     "ui",
     "tools"

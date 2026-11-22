@@ -27,7 +27,7 @@ public sealed class ExtensionUpdaterTests
         var ui = extension.GetUIManifest();
         Assert.NotNull(ui);
         Assert.Contains(ui.Pages, p => p.ComponentName == "ExtensionUpdaterPage");
-        Assert.Equal("0.1.2", extension.Version);
+        Assert.Equal("0.2.0", extension.Version);
     }
 
     [Fact]
@@ -38,9 +38,9 @@ public sealed class ExtensionUpdaterTests
         service.AttachStore(store);
 
         var initial = await service.GetSourcesAsync();
-        Assert.Single(initial);
-        Assert.Equal("manifest-feed", initial[0].Kind);
-        Assert.Contains("otter-twunk/kari-downloads", initial[0].Url);
+        Assert.Equal(5, initial.Count);
+        Assert.All(initial, s => Assert.Equal("manifest-feed", s.Kind));
+        Assert.Contains(initial, s => s.Url.Contains("gitea.tail971353.ts.net/gitea-admin/kari-downloads"));
 
         var added = await service.UpsertSourceAsync(new ExtensionSourceEntry
         {
@@ -52,9 +52,9 @@ public sealed class ExtensionUpdaterTests
 
         Assert.Equal("ext-custom-zip", added.Id);
         var afterAdd = await service.GetSourcesAsync();
-        Assert.Equal(2, afterAdd.Count);
+        Assert.Equal(6, afterAdd.Count);
 
-        // Reject invalid URLs or bad GitHub repo slugs
+        // Reject invalid URLs or bad GitHub/Gitea repo slugs
         await Assert.ThrowsAsync<ArgumentException>(() => service.UpsertSourceAsync(new ExtensionSourceEntry
         {
             Kind = "static-zip",
@@ -67,10 +67,16 @@ public sealed class ExtensionUpdaterTests
             Url = "invalid/../slug",
         }));
 
+        await Assert.ThrowsAsync<ArgumentException>(() => service.UpsertSourceAsync(new ExtensionSourceEntry
+        {
+            Kind = "gitea-release",
+            Url = "not-a-url",
+        }));
+
         var deleted = await service.DeleteSourceAsync("ext-custom-zip");
         Assert.True(deleted);
         var afterDelete = await service.GetSourcesAsync();
-        Assert.Single(afterDelete);
+        Assert.Equal(5, afterDelete.Count);
     }
 
     [Fact]

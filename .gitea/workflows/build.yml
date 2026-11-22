@@ -1,0 +1,181 @@
+name: Build and Release Extensions
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags:
+      - '*/v*'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Extension name from catalog.json, or 'all-karinauts' to publish all non-example extensions to latest"
+        type: string
+        default: all-karinauts
+
+env:
+  DOTNET_VERSION: '10.0.x'
+  PUBLIC_SERVER_URL: https://gitea.tail971353.ts.net
+  COVE_PKG_FLAGS: -p:UseLocalCoveSource=false -p:UseLocalCoveCore=false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate extension catalog and manifests
+        run: node scripts/validate-extension-repo.mjs
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install UI build dependencies
+        run: npm ci
+
+      - name: Build, package, and publish targeted extensions
+        env:
+          GITEA_TOKEN: ${{ secrets.RELEASE_TOKEN || gitea.token }}
+          GITEA_API_URL: ${{ gitea.api_url }}
+          GITEA_REPOSITORY: ${{ gitea.repository }}
+          TARGET_COMMITISH: ${{ gitea.sha }}
+          PUBLIC_SERVER_URL: ${{ env.PUBLIC_SERVER_URL }}
+          DISPATCH_TARGET: ${{ inputs.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run build:ui
+
+          TARGETS_JSON=$(node <<'NODE'
+          const fs = require("fs");
+          const catalog = JSON.parse(fs.readFileSync("extensions/catalog.json", "utf8"));
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const ref = process.env.GITHUB_REF || "";
+          const refName = process.env.GITHUB_REF_NAME || "";
+          const dispatchTarget = (process.env.DISPATCH_TARGET || "all-karinauts").trim();
+
+          let selected = [];
+          if (eventName === "pull_request") {
+            selected = catalog.extensions.map((e) => ({
+              ...e,
+              version: JSON.parse(fs.readFileSync(`${e.path}/extension.json`, "utf8")).version || "0.0.0",
+              tag: "",
+              publish: false,
+              skipVersioned: true,
+            }));
+          } else if (ref.startsWith("refs/tags/")) {
+            const matches = catalog.extensions.filter((e) => refName.startsWith(e.tagPrefix));
+            if (matches.length !== 1) {
+              console.error(`ERROR: Release tag '${refName}' does not match exactly one tagPrefix in extensions/catalog.json.`);
+              process.exit(1);
+            }
+            const ext = matches[0];
+            const versionTag = refName.slice(ext.tagPrefix.length);
+            if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(versionTag)) {
+              console.error(`ERROR: Invalid version '${versionTag}' in tag '${refName}'.`);
+              process.exit(1);
+            }
+            selected = [{
+              ...ext,
+              version: versionTag.slice(1),
+              tag: refName,
+              publish: true,
+              skipVersioned: false,
+            }];
+          } else if (eventName === "workflow_dispatch") {
+            const pool = dispatchTarget === "all-karinauts"
+              ? catalog.extensions.filter((e) => !e.name.startsWith("Example"))
+              : catalog.extensions.filter((e) => e.name === dispatchTarget || e.id === dispatchTarget);
+            if (pool.length === 0) {
+              console.error(`ERROR: No extension matched workflow_dispatch target '${dispatchTarget}'.`);
+              process.exit(1);
+            }
+            selected = pool.map((e) => {
+              const ver = JSON.parse(fs.readFileSync(`${e.path}/extension.json`, "utf8")).version;
+              return {
+                ...e,
+                version: ver,
+                tag: `${e.tagPrefix}v${ver}`,
+                publish: true,
+                skipVersioned: true,
+              };
+            });
+          }
+
+          process.stdout.write(JSON.stringify(selected));
+          NODE
+          )
+
+          echo "$TARGETS_JSON" > /tmp/targets.json
+          COUNT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8')).length)")
+          echo "Processing $COUNT extension(s)..."
+
+          for ((i=0; i<COUNT; i++)); do
+            NAME=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].name)")
+            ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].id)")
+            EXT_PATH=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].path)")
+            VERSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].version)")
+            TAG=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].tag)")
+            PUBLISH=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].publish)")
+            SKIP_VER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].skipVersioned)")
+            MANIFEST_ONLY=$(node -e "console.log(Boolean(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].manifestOnly))")
+            CONTENT_ONLY=$(node -e "console.log(Boolean(JSON.parse(require('fs').readFileSync('/tmp/targets.json','utf8'))[$i].contentOnly))")
+
+            echo "=== Building $NAME ($ID v$VERSION) ==="
+            OUT_DIR="artifacts/$NAME"
+            rm -rf "$OUT_DIR"
+
+            if [[ "$MANIFEST_ONLY" != "true" ]]; then
+              dotnet restore "$EXT_PATH" ${{ env.COVE_PKG_FLAGS }}
+              dotnet build "$EXT_PATH" -c Release --no-restore -p:Version="$VERSION" -p:ContinuousIntegrationBuild=true ${{ env.COVE_PKG_FLAGS }}
+              dotnet publish "$EXT_PATH" -c Release -o "$OUT_DIR" --no-build -p:Version="$VERSION" -p:ContinuousIntegrationBuild=true ${{ env.COVE_PKG_FLAGS }}
+            else
+              mkdir -p "$OUT_DIR"
+            fi
+
+            cp "$EXT_PATH/extension.json" "$OUT_DIR/"
+            if [[ -d "$EXT_PATH/dist" ]]; then
+              mkdir -p "$OUT_DIR/dist"
+              cp -R "$EXT_PATH/dist/." "$OUT_DIR/dist/"
+            fi
+            if [[ -d "$EXT_PATH/docs" ]]; then
+              mkdir -p "$OUT_DIR/docs"
+              cp -R "$EXT_PATH/docs/." "$OUT_DIR/docs/"
+            fi
+            if [[ "$CONTENT_ONLY" == "true" && -d "$EXT_PATH/scrapers" ]]; then
+              cp -R "$EXT_PATH/scrapers" "$OUT_DIR/"
+            fi
+
+            node -e "const fs=require('fs'); const f='$OUT_DIR/extension.json'; const j=JSON.parse(fs.readFileSync(f,'utf8')); j.version='$VERSION'; fs.writeFileSync(f, JSON.stringify(j, null, 2) + '\n');"
+
+            # Verify no host-provided assemblies leaked
+            if ls "$OUT_DIR" | grep -E '^(Cove\.(Core|Plugins|Sdk)|Npgsql|Pgvector|Microsoft\.EntityFrameworkCore)'; then
+              echo "::error::host-provided assemblies must not ship in $NAME"
+              exit 1
+            fi
+
+            if [[ "$PUBLISH" == "true" ]]; then
+              ZIP_FILE="${ID}-${VERSION}.zip"
+              python3 - "$OUT_DIR" "$ZIP_FILE" <<'PY'
+          import os, sys, zipfile
+          src, out = sys.argv[1], sys.argv[2]
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+              for root, _, files in os.walk(src):
+                  for name in sorted(files):
+                      full = os.path.join(root, name)
+                      rel = os.path.relpath(full, src).replace(os.sep, "/")
+                      zf.write(full, rel)
+          print(f"Created {out}")
+          PY
+              ARGS=(--zip "$ZIP_FILE" --manifest "$OUT_DIR/extension.json" --tag "$TAG")
+              if [[ "$SKIP_VER" == "true" ]]; then
+                ARGS+=(--skip-versioned)
+              fi
+              node scripts/publish-gitea-release.mjs "${ARGS[@]}"
+            fi
+          done

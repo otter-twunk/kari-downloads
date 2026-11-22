@@ -12,7 +12,7 @@ namespace ExtensionUpdater;
 public sealed record ExtensionSourceEntry
 {
     public string Id { get; init; } = Guid.NewGuid().ToString("N")[..12];
-    public string Kind { get; init; } = "static-zip"; // "manifest-feed" | "static-zip" | "github-release"
+    public string Kind { get; init; } = "static-zip"; // "manifest-feed" | "static-zip" | "gitea-release" | "github-release"
     public string Label { get; init; } = string.Empty;
     public string Url { get; init; } = string.Empty;
     public string? TagPrefix { get; init; }
@@ -33,6 +33,8 @@ public sealed record DiscoveredExtensionItem
     public IReadOnlyList<string>? Categories { get; init; }
     public string? Description { get; init; }
     public string DownloadUrl { get; init; } = string.Empty;
+    public string? Tag { get; init; }
+    public string? Sha256 { get; init; }
     public string? UpdatedAt { get; init; }
     public string? Error { get; init; }
 }
@@ -43,8 +45,9 @@ public sealed record CheckSourcesResult(
 
 public sealed class ExtensionUpdaterService
 {
+    public const string DefaultGiteaBaseUrl = "https://gitea.tail971353.ts.net";
     public const string DefaultFeedUrl =
-        "https://github.com/otter-twunk/kari-downloads/releases/download/latest/latest-manifest.json";
+        $"{DefaultGiteaBaseUrl}/gitea-admin/kari-downloads/releases/download/latest/latest-manifest.json";
 
     private const string StoreKey = "sources.v1";
     private const long MaxZipInspectBytes = 64 * 1024 * 1024;
@@ -82,7 +85,7 @@ public sealed class ExtensionUpdaterService
     private static HttpClient CreateDefaultHttpClient()
     {
         var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CoveExtensionUpdater", "0.1.2"));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("CoveExtensionUpdater", "0.2.0"));
         return client;
     }
 
@@ -92,8 +95,40 @@ public sealed class ExtensionUpdaterService
         {
             Id = "kari-downloads-feed",
             Kind = "manifest-feed",
-            Label = "kari-downloads (All Repo Extensions)",
+            Label = "kari-downloads (Gitea)",
             Url = DefaultFeedUrl,
+            Enabled = true,
+        },
+        new ExtensionSourceEntry
+        {
+            Id = "cove-librarian-feed",
+            Kind = "manifest-feed",
+            Label = "Cove Librarian (Gitea)",
+            Url = $"{DefaultGiteaBaseUrl}/gitea-admin/cove-librarian/releases/download/latest/latest-manifest.json",
+            Enabled = true,
+        },
+        new ExtensionSourceEntry
+        {
+            Id = "cove-apple-playback-feed",
+            Kind = "manifest-feed",
+            Label = "Cove Apple Playback (Gitea)",
+            Url = $"{DefaultGiteaBaseUrl}/gitea-admin/cove-apple-playback/releases/download/latest/latest-manifest.json",
+            Enabled = true,
+        },
+        new ExtensionSourceEntry
+        {
+            Id = "music-montage-app-feed",
+            Kind = "manifest-feed",
+            Label = "Music Montage (Gitea)",
+            Url = $"{DefaultGiteaBaseUrl}/gitea-admin/music-montage-app/releases/download/latest/latest-manifest.json",
+            Enabled = true,
+        },
+        new ExtensionSourceEntry
+        {
+            Id = "cove-ops-monitor-feed",
+            Kind = "manifest-feed",
+            Label = "Ops & Backups Monitor (Gitea)",
+            Url = $"{DefaultGiteaBaseUrl}/gitea-admin/cove-ops-monitor/releases/download/latest/latest-manifest.json",
             Enabled = true,
         },
     ];
@@ -170,6 +205,11 @@ public sealed class ExtensionUpdaterService
             if (!GitHubRepoSlugRegex.IsMatch(repoSlug) || repoSlug.Contains("..", StringComparison.Ordinal))
                 throw new ArgumentException($"Invalid GitHub repository '{rawUrl}'. Expected 'owner/repo' or a GitHub repo URL.");
         }
+        else if (kind == "gitea-release")
+        {
+            if (!TryParseGiteaRepoUrl(rawUrl, out _, out _))
+                throw new ArgumentException($"Invalid Gitea repository URL '{rawUrl}'. Expected 'https://<host>/<owner>/<repo>'.");
+        }
         else
         {
             if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) ||
@@ -245,6 +285,9 @@ public sealed class ExtensionUpdaterService
                 {
                     case "manifest-feed":
                         itemsBySource[idx] = await CheckManifestFeedAsync(source, ct);
+                        break;
+                    case "gitea-release":
+                        itemsBySource[idx] = [await CheckGiteaReleaseAsync(source, ct)];
                         break;
                     case "github-release":
                         itemsBySource[idx] = [await CheckGitHubReleaseAsync(source, ct)];
@@ -340,6 +383,8 @@ public sealed class ExtensionUpdaterService
         var minCoveVersion = GetString(elem, "minCoveVersion");
         var description = GetString(elem, "description");
         var downloadUrl = GetString(elem, "downloadUrl") ?? GetString(elem, "url") ?? string.Empty;
+        var tag = GetString(elem, "tag");
+        var sha256 = GetString(elem, "sha256");
         var updatedAt = GetString(elem, "updatedAt");
         var categories = GetStringList(elem, "categories");
 
@@ -355,8 +400,117 @@ public sealed class ExtensionUpdaterService
             Categories = categories,
             Description = description,
             DownloadUrl = downloadUrl,
+            Tag = tag,
+            Sha256 = sha256,
             UpdatedAt = updatedAt,
         };
+    }
+
+    private async Task<DiscoveredExtensionItem> CheckGiteaReleaseAsync(ExtensionSourceEntry source, CancellationToken ct)
+    {
+        if (!TryParseGiteaRepoUrl(source.Url, out var baseUrl, out var repo))
+            throw new InvalidOperationException($"Invalid Gitea repository URL '{source.Url}'.");
+
+        var apiUrl = $"{baseUrl}/api/v1/repos/{repo}/releases?limit=25";
+        using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        using var res = await _http.SendAsync(req, ct);
+        res.EnsureSuccessStatusCode();
+        var json = await res.Content.ReadAsStringAsync(ct);
+
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidOperationException("Unexpected Gitea releases response.");
+
+        foreach (var release in doc.RootElement.EnumerateArray())
+        {
+            if (release.TryGetProperty("draft", out var draftProp) && draftProp.GetBoolean())
+                continue;
+
+            var tagName = GetString(release, "tag_name") ?? string.Empty;
+            if (string.Equals(tagName, "latest", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(source.TagPrefix) &&
+                !tagName.StartsWith(source.TagPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!release.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+                continue;
+
+            string? chosenUrl = null;
+            string? chosenName = null;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                var assetName = GetString(asset, "name") ?? string.Empty;
+                var assetUrl = GetString(asset, "browser_download_url");
+                if (string.IsNullOrWhiteSpace(assetUrl) || !assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (!string.IsNullOrWhiteSpace(source.AssetPattern) &&
+                    !WildcardMatch(assetName, source.AssetPattern))
+                {
+                    continue;
+                }
+
+                chosenName = assetName;
+                chosenUrl = assetUrl;
+                break;
+            }
+
+            if (chosenUrl == null)
+                continue;
+
+            var version = ExtractVersionFromTag(tagName, source.TagPrefix);
+            var publishedAt = GetString(release, "published_at") ?? GetString(release, "created_at");
+            var releaseName = GetString(release, "name");
+
+            return new DiscoveredExtensionItem
+            {
+                SourceId = source.Id,
+                SourceLabel = source.Label,
+                SourceKind = source.Kind,
+                ExtensionId = source.ExtensionId ?? InferExtensionIdFromAsset(chosenName, version),
+                Name = string.IsNullOrWhiteSpace(source.Label) ? (releaseName ?? repo) : source.Label,
+                RemoteVersion = version,
+                DownloadUrl = chosenUrl,
+                Tag = tagName,
+                UpdatedAt = publishedAt,
+            };
+        }
+
+        throw new InvalidOperationException($"No matching release with a .zip asset found for '{repo}'.");
+    }
+
+    public static bool TryParseGiteaRepoUrl(string input, out string baseUrl, out string repoSlug)
+    {
+        baseUrl = string.Empty;
+        repoSlug = string.Empty;
+        var trimmed = input.Trim().TrimEnd('/');
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
+            return false;
+
+        var owner = segments[0];
+        var repo = segments[1].EndsWith(".git", StringComparison.OrdinalIgnoreCase)
+            ? segments[1][..^4]
+            : segments[1];
+        var slug = $"{owner}/{repo}";
+        if (!GitHubRepoSlugRegex.IsMatch(slug) || slug.Contains("..", StringComparison.Ordinal))
+            return false;
+
+        baseUrl = $"{uri.Scheme}://{uri.Authority}";
+        repoSlug = slug;
+        return true;
     }
 
     private async Task<DiscoveredExtensionItem> CheckGitHubReleaseAsync(ExtensionSourceEntry source, CancellationToken ct)
@@ -535,6 +689,7 @@ public sealed class ExtensionUpdaterService
     public static string NormalizeKind(string? kind) => kind?.Trim().ToLowerInvariant() switch
     {
         "manifest-feed" => "manifest-feed",
+        "gitea-release" => "gitea-release",
         "github-release" => "github-release",
         _ => "static-zip",
     };
