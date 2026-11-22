@@ -27,7 +27,7 @@ public sealed class ExtensionUpdaterTests
         var ui = extension.GetUIManifest();
         Assert.NotNull(ui);
         Assert.Contains(ui.Pages, p => p.ComponentName == "ExtensionUpdaterPage");
-        Assert.Equal("0.2.0", extension.Version);
+        Assert.Equal("0.2.1", extension.Version);
     }
 
     [Fact]

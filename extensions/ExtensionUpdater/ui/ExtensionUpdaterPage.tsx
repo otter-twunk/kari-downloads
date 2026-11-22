@@ -126,6 +126,38 @@ export function ExtensionUpdaterPage() {
   const [newAssetPattern, setNewAssetPattern] = useState("");
   const [savingSource, setSavingSource] = useState(false);
 
+  // Gitea token state (stored server-side, never returned in plaintext)
+  const [hasGiteaToken, setHasGiteaToken] = useState(false);
+  const [giteaTokenInput, setGiteaTokenInput] = useState("");
+  const [savingToken, setSavingToken] = useState(false);
+
+  async function loadAuthStatus() {
+    const res = await extensionFetch("/api/ext/extension-updater/auth");
+    if (res.ok) {
+      const data = await res.json();
+      setHasGiteaToken(!!data.hasGiteaToken);
+    }
+  }
+
+  async function handleSaveGiteaToken(tokenValue: string) {
+    setSavingToken(true);
+    try {
+      const res = await extensionFetch("/api/ext/extension-updater/auth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ giteaToken: tokenValue }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setHasGiteaToken(!!data.hasGiteaToken);
+        setGiteaTokenInput("");
+        await checkUpdates();
+      }
+    } finally {
+      setSavingToken(false);
+    }
+  }
+
   async function loadInstalled() {
     const res = await extensionFetch("/api/extensions");
     if (!res.ok) return;
@@ -168,7 +200,7 @@ export function ExtensionUpdaterPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await Promise.all([loadSources(), loadInstalled()]);
+      await Promise.all([loadSources(), loadInstalled(), loadAuthStatus()]);
       setLoading(false);
       await checkUpdates();
     })();
@@ -210,11 +242,38 @@ export function ExtensionUpdaterPage() {
   async function installFromUrl(item: DiscoveredItem, itemKey: string, options?: { skipRefresh?: boolean }) {
     setUpdatingKey(itemKey);
     try {
-      const res = await extensionFetch("/api/extensions/install-from-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: item.downloadUrl, trustUnverified: true }),
-      });
+      let res: Response;
+      const isGiteaUrl = item.downloadUrl.toLowerCase().includes("gitea.tail971353.ts.net");
+      if (hasGiteaToken && isGiteaUrl) {
+        const proxyRes = await extensionFetch("/api/ext/extension-updater/download-proxy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: item.downloadUrl }),
+        });
+        if (!proxyRes.ok) {
+          const proxyErr = await proxyRes.json().catch(() => ({}));
+          setStatusLog((prev) => ({
+            ...prev,
+            [itemKey]: { ok: false, message: proxyErr.message || `Download failed (HTTP ${proxyRes.status})` },
+          }));
+          return false;
+        }
+        const blob = await proxyRes.blob();
+        const form = new FormData();
+        const fileName = `${item.extensionId || "extension"}-${item.remoteVersion || "latest"}.zip`;
+        form.append("file", blob, fileName);
+        form.append("trustUnverified", "true");
+        res = await extensionFetch("/api/extensions/install-zip", {
+          method: "POST",
+          body: form,
+        });
+      } else {
+        res = await extensionFetch("/api/extensions/install-from-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: item.downloadUrl, trustUnverified: true }),
+        });
+      }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         setStatusLog((prev) => ({
@@ -505,6 +564,55 @@ export function ExtensionUpdaterPage() {
           </div>
         </form>
       )}
+
+      {/* Gitea Auth Token Bar */}
+      <div
+        className="p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3"
+        style={{ background: "var(--bg-surface)", borderColor: "var(--border-subtle)" }}
+      >
+        <div className="flex items-center gap-2 text-sm">
+          <span className="font-medium">Gitea Read Token:</span>
+          {hasGiteaToken ? (
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              Configured
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30">
+              Not set (required if Gitea has REQUIRE_SIGNIN_VIEW)
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={giteaTokenInput}
+            onChange={(e) => setGiteaTokenInput(e.target.value)}
+            placeholder="Paste read-only Gitea token..."
+            className="px-2.5 py-1.5 rounded-lg border text-xs w-56"
+            style={{ background: "var(--bg-elevated)", borderColor: "var(--border-subtle)" }}
+          />
+          <button
+            type="button"
+            disabled={savingToken || !giteaTokenInput.trim()}
+            onClick={() => handleSaveGiteaToken(giteaTokenInput)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white cursor-pointer disabled:opacity-50"
+            style={{ background: "var(--color-primary)" }}
+          >
+            Save Token
+          </button>
+          {hasGiteaToken && (
+            <button
+              type="button"
+              disabled={savingToken}
+              onClick={() => handleSaveGiteaToken("")}
+              className="px-2.5 py-1.5 rounded-lg text-xs border cursor-pointer disabled:opacity-50"
+              style={{ borderColor: "var(--border-subtle)" }}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Errors */}
       {checkErrors.length > 0 && (

@@ -85,5 +85,36 @@ public sealed class ExtensionUpdaterExtension : CoveExtensionBase, IUIExtension,
             var result = await _service.CheckSourcesAsync(inspectStaticZips ?? true, ct);
             return Results.Ok(result);
         }).RequireCovePermission("extensions.read");
+
+        group.MapGet("/auth", async (CancellationToken ct) =>
+        {
+            var hasToken = await _service.HasGiteaTokenAsync(ct);
+            return Results.Ok(new { hasGiteaToken = hasToken });
+        }).RequireCovePermission("extensions.read");
+
+        group.MapPost("/auth", async ([FromBody] GiteaAuthRequest body, CancellationToken ct) =>
+        {
+            await _service.SetGiteaTokenAsync(body.GiteaToken, ct);
+            var hasToken = await _service.HasGiteaTokenAsync(ct);
+            return Results.Ok(new { hasGiteaToken = hasToken });
+        }).RequireCovePermission("extensions.install");
+
+        group.MapPost("/download-proxy", async ([FromBody] DownloadProxyRequest body, CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(body.Url))
+                return Results.BadRequest(new { message = "Download URL is required." });
+            try
+            {
+                var (bytes, fileName) = await _service.DownloadPackageBytesAsync(body.Url, ct);
+                return Results.File(bytes, "application/zip", fileName);
+            }
+            catch (Exception ex)
+            {
+                return Results.BadRequest(new { message = ex.Message });
+            }
+        }).RequireCovePermission("extensions.install");
     }
 }
+
+public sealed record GiteaAuthRequest(string? GiteaToken);
+public sealed record DownloadProxyRequest(string Url);

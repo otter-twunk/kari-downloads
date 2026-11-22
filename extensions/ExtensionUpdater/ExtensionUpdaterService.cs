@@ -50,6 +50,7 @@ public sealed class ExtensionUpdaterService
         $"{DefaultGiteaBaseUrl}/gitea-admin/kari-downloads/releases/download/latest/latest-manifest.json";
 
     private const string StoreKey = "sources.v1";
+    private const string GiteaTokenKey = "gitea-token.v1";
     private const long MaxZipInspectBytes = 64 * 1024 * 1024;
 
     private static readonly Regex GitHubRepoSlugRegex = new(
@@ -69,6 +70,7 @@ public sealed class ExtensionUpdaterService
     private readonly ConcurrentDictionary<string, CachedZipEntry> _zipCache = new(StringComparer.OrdinalIgnoreCase);
     private IExtensionStore? _store;
     private List<ExtensionSourceEntry>? _memoryFallback;
+    private string? _memoryGiteaToken;
 
     private sealed record CachedZipEntry(
         string? ETag,
@@ -339,10 +341,101 @@ public sealed class ExtensionUpdaterService
         return new CheckSourcesResult(allItems, allErrors);
     }
 
+    public async Task<bool> HasGiteaTokenAsync(CancellationToken ct = default)
+        => !string.IsNullOrWhiteSpace(await GetGiteaTokenAsync(ct));
+
+    public async Task<string?> GetGiteaTokenAsync(CancellationToken ct = default)
+    {
+        if (_store != null)
+        {
+            var raw = await _store.GetAsync(GiteaTokenKey, ct);
+            return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+        }
+        return string.IsNullOrWhiteSpace(_memoryGiteaToken) ? null : _memoryGiteaToken.Trim();
+    }
+
+    public async Task SetGiteaTokenAsync(string? token, CancellationToken ct = default)
+    {
+        var cleaned = string.IsNullOrWhiteSpace(token) ? null : token.Trim();
+        if (_store != null)
+        {
+            if (cleaned == null)
+                await _store.DeleteAsync(GiteaTokenKey, ct);
+            else
+                await _store.SetAsync(GiteaTokenKey, cleaned, ct);
+            return;
+        }
+        _memoryGiteaToken = cleaned;
+    }
+
+    private async Task AttachGiteaAuthIfApplicableAsync(HttpRequestMessage req, CancellationToken ct)
+    {
+        if (req.RequestUri == null || !req.RequestUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            return;
+        var giteaHost = new Uri(DefaultGiteaBaseUrl).Host;
+        if (!req.RequestUri.Host.Equals(giteaHost, StringComparison.OrdinalIgnoreCase))
+            return;
+        var token = await GetGiteaTokenAsync(ct);
+        if (!string.IsNullOrWhiteSpace(token))
+        {
+            req.Headers.TryAddWithoutValidation("Authorization", $"token {token}");
+        }
+    }
+
+    public async Task<(byte[] Bytes, string FileName)> DownloadPackageBytesAsync(string url, CancellationToken ct = default)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new ArgumentException("Download URL must be an absolute http:// or https:// URL.");
+        }
+
+        using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+        await AttachGiteaAuthIfApplicableAsync(req, ct);
+
+        using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        res.EnsureSuccessStatusCode();
+
+        var mediaType = res.Content.Headers.ContentType?.MediaType ?? string.Empty;
+        if (mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Remote host returned an HTML sign-in page instead of a ZIP archive. Configure a Gitea Read Token in Extension Updater.");
+        }
+
+        if (res.Content.Headers.ContentLength is long len && len > MaxZipInspectBytes)
+            throw new InvalidOperationException($"ZIP exceeds {MaxZipInspectBytes / (1024 * 1024)} MB download limit.");
+
+        await using var stream = await res.Content.ReadAsStreamAsync(ct);
+        using var ms = new MemoryStream();
+        var buffer = new byte[81920];
+        long totalRead = 0;
+        int read;
+        while ((read = await stream.ReadAsync(buffer, ct)) > 0)
+        {
+            totalRead += read;
+            if (totalRead > MaxZipInspectBytes)
+                throw new InvalidOperationException($"ZIP exceeds {MaxZipInspectBytes / (1024 * 1024)} MB download limit.");
+            ms.Write(buffer, 0, read);
+        }
+
+        var fileName = Path.GetFileName(uri.AbsolutePath);
+        if (string.IsNullOrWhiteSpace(fileName) || !fileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+            fileName = "extension.zip";
+
+        return (ms.ToArray(), fileName);
+    }
+
     private async Task<List<DiscoveredExtensionItem>> CheckManifestFeedAsync(ExtensionSourceEntry source, CancellationToken ct)
     {
-        using var res = await _http.GetAsync(source.Url, ct);
+        using var req = new HttpRequestMessage(HttpMethod.Get, source.Url);
+        await AttachGiteaAuthIfApplicableAsync(req, ct);
+        using var res = await _http.SendAsync(req, ct);
         res.EnsureSuccessStatusCode();
+        var mediaType = res.Content.Headers.ContentType?.MediaType ?? string.Empty;
+        if (mediaType.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Feed returned an HTML sign-in page instead of JSON. Configure a Gitea Read Token in Extension Updater.");
+        }
         var json = await res.Content.ReadAsStringAsync(ct);
 
         using var doc = JsonDocument.Parse(json);
@@ -414,6 +507,7 @@ public sealed class ExtensionUpdaterService
         var apiUrl = $"{baseUrl}/api/v1/repos/{repo}/releases?limit=25";
         using var req = new HttpRequestMessage(HttpMethod.Get, apiUrl);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        await AttachGiteaAuthIfApplicableAsync(req, ct);
 
         using var res = await _http.SendAsync(req, ct);
         res.EnsureSuccessStatusCode();
@@ -611,6 +705,7 @@ public sealed class ExtensionUpdaterService
         }
 
         using var req = new HttpRequestMessage(HttpMethod.Get, source.Url);
+        await AttachGiteaAuthIfApplicableAsync(req, ct);
         if (_zipCache.TryGetValue(source.Url, out var cached))
         {
             if (!string.IsNullOrWhiteSpace(cached.ETag))
