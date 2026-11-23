@@ -45,6 +45,7 @@
         <ProjectReference Include="..\..\extensions\ThisvidDownloader\ThisvidDownloader.csproj" />
         <ProjectReference Include="..\..\extensions\ThisvidScraper\ThisvidScraper.csproj" />
         <ProjectReference Include="..\..\extensions\ExtensionUpdater\ExtensionUpdater.csproj" />
+        <ProjectReference Include="..\..\extensions\XcomDownloader\XcomDownloader.csproj" />
     <!-- EXTENSION_PROJECT_REFERENCES -->
   </ItemGroup>
 
