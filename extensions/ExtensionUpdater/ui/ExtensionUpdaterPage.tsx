@@ -263,7 +263,7 @@ export function ExtensionUpdaterPage() {
         const fileName = `${item.extensionId || "extension"}-${item.remoteVersion || "latest"}.zip`;
         form.append("file", blob, fileName);
         form.append("trustUnverified", "true");
-        res = await extensionFetch("/api/extensions/install-zip", {
+        res = await extensionFetch("/api/extensions/install-from-zip", {
           method: "POST",
           body: form,
         });
