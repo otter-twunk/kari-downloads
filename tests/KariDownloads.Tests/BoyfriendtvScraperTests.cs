@@ -2,6 +2,7 @@ using Cove.Core.DTOs;
 using Cove.Plugins;
 using KariDownloads.Tests.Infrastructure;
 using BoyfriendtvScraper;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KariDownloads.Tests;
 
@@ -9,6 +10,8 @@ public sealed class BoyfriendtvScraperTests
 {
     private const string VideoUrl = "https://www.boyfriendtv.com/videos/1426460/handsome-twink-audition/";
     private const string PerformerUrl = "https://www.boyfriendtv.com/pornstars/scott-demarco-2077/";
+    private const string CanonicalVideoUrl = "https://www.boyfriend.tv/videos/1426460/handsome-twink-audition/";
+    private const string CanonicalPerformerUrl = "https://www.boyfriend.tv/pornstars/scott-demarco-2077/";
 
     private const string VideoPageHtml = """
         <!doctype html>
@@ -109,7 +112,7 @@ public sealed class BoyfriendtvScraperTests
     public async Task ScrapeVideoAsync_ExtractsMetadataFromFixture()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(VideoUrl, VideoPageHtml);
+            .MapHtml(CanonicalVideoUrl, VideoPageHtml);
 
         var extension = new BoyfriendtvScraperExtension();
         await extension.InitializeAsync(harness.Services);
@@ -188,7 +191,7 @@ public sealed class BoyfriendtvScraperTests
     public async Task ScrapePerformerAsync_ExtractsPerformerMetadata()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(PerformerUrl, PerformerPageHtml);
+            .MapHtml(CanonicalPerformerUrl, PerformerPageHtml);
 
         var extension = new BoyfriendtvScraperExtension();
         await extension.InitializeAsync(harness.Services);

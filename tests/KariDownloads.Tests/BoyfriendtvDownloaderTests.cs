@@ -1,12 +1,14 @@
 using Cove.Plugins;
 using KariDownloads.Tests.Infrastructure;
 using BoyfriendtvDownloader;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KariDownloads.Tests;
 
 public sealed class BoyfriendtvDownloaderTests
 {
     private const string SampleVideoPageUrl = "https://www.boyfriendtv.com/videos/1426460/selector/";
+    private const string CanonicalVideoPageUrl = "https://www.boyfriend.tv/videos/1426460/selector/";
     private const string Stream1080Url = "https://cdn.boyfriendtv.com/media/stream_1080p.mp4";
     private const string Stream720Url = "https://cdn.boyfriendtv.com/key=abc123xyz/media=mp4/stream_720p.mp4";
 
@@ -67,7 +69,7 @@ public sealed class BoyfriendtvDownloaderTests
     public async Task MatchAsync_DiscoversMetadataAndQualityOptions()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(SampleVideoPageUrl, RealisticPageHtml);
+            .MapHtml(CanonicalVideoPageUrl, RealisticPageHtml);
 
         var extension = new BoyfriendtvDownloaderExtension();
         await extension.InitializeAsync(harness.Services);
@@ -83,10 +85,52 @@ public sealed class BoyfriendtvDownloaderTests
     }
 
     [Fact]
+    public async Task DownloadAsync_PageWithCloudflareBackgroundBeacon_IsNotTreatedAsChallenge()
+    {
+        // Live boyfriend.tv pages (HTTP 200) embed Cloudflare's precursor/jsd beacon scripts.
+        const string beacon =
+            "<script>var u='/cdn-cgi/challenge-platform/scripts/precursor/main.js?ray=abc';</script>" +
+            "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script></body>";
+        var html = RealisticPageHtml.Replace("</body>", beacon, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("challenge-platform", html);
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(CanonicalVideoPageUrl, html)
+            .MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                SampleVideoPageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriendtv.com", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.True(File.Exists(Path.Combine(harness.TempDirectory, result.LocalPath)));
+    }
+
+    [Theory]
+    [InlineData("<html><head><title>Just a moment...</title></head><body><script src=\"https://challenges.cloudflare.com/turnstile/v0/api.js\"></script></body></html>", true)]
+    [InlineData("<html><script>window._cf_chl_opt={cvId:'3'};</script></html>", true)]
+    [InlineData("<html><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1\"></script></html>", true)]
+    [InlineData("<html><script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script><script>var playerConfig={};</script></html>", false)]
+    public void IsCloudflareChallenge_DistinguishesInterstitialFromBackgroundBeacon(string html, bool expected)
+    {
+        var helper = typeof(BoyfriendtvDownloaderExtension).Assembly.GetType("KariDownloads.Shared.BoyfriendtvAuthHelper", throwOnError: true)!;
+        var method = helper.GetMethod("IsCloudflareChallenge")!;
+        Assert.Equal(expected, (bool)method.Invoke(null, [System.Net.HttpStatusCode.OK, html])!);
+    }
+
+    [Fact]
     public async Task DownloadAsync_DownloadsDefaultHighestMp4_AndReportsMetadata()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(SampleVideoPageUrl, RealisticPageHtml)
+            .MapHtml(CanonicalVideoPageUrl, RealisticPageHtml)
             .MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
 
         var extension = new BoyfriendtvDownloaderExtension();
@@ -126,7 +170,7 @@ public sealed class BoyfriendtvDownloaderTests
     public async Task DownloadAsync_RespectsQualitySelectionAndResolvesKeyPrefix()
     {
         using var harness = new FakeDownloaderHost()
-            .MapHtml(SampleVideoPageUrl, RealisticPageHtml)
+            .MapHtml(CanonicalVideoPageUrl, RealisticPageHtml)
             .MapBytes(Stream720Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
 
         var extension = new BoyfriendtvDownloaderExtension();
@@ -254,10 +298,285 @@ public sealed class BoyfriendtvDownloaderTests
         Assert.NotNull(result);
         Assert.Equal("1426460", result.InlineVideoMetadata?.Code);
         Assert.Contains("PHPSESSID=dl_sess_99", observedCdnCookie);
+        Assert.Contains("rta_terms_accepted=1", observedCdnCookie);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_ThrowsActionableDiagnostic_WhenRtaGateIsReturned()
+    {
+        const string videoUrl = "https://www.boyfriend.tv/videos/1426460/selector/";
+        const string rtaGateHtml = """
+            <html>
+            <head><title>Gay Tube - Free Gay Porn Videos at BoyFriendTV</title></head>
+            <body><div class="rta-section"><a href="?rta_terms_accepted=true">Enter</a></div></body>
+            </html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(videoUrl, rtaGateHtml);
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                videoUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv"])),
+            harness,
+            CancellationToken.None));
+
+        Assert.Contains("age-verification or login wall", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("https://www.boyfriendtv.com/videos/1426460/selector/")]
+    [InlineData("https://boyfriendtv.com/videos/1426460/selector/")]
+    public async Task DownloadAsync_RewritesLegacyBoyfriendtvComHost_ToAvoidCloudflare(string legacyUrl)
+    {
+        const string canonicalUrl = "https://www.boyfriend.tv/videos/1426460/selector/";
+        const string cloudflareHtml = """
+            <html><head><title>Just a moment...</title></head>
+            <body><script src="https://challenges.cloudflare.com/x.js"></script></body></html>
+            """;
+
+        using var harness = new FakeDownloaderHost()
+            .MapHtml(legacyUrl, cloudflareHtml, System.Net.HttpStatusCode.Forbidden)
+            .MapHtml(canonicalUrl, RealisticPageHtml)
+            .MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                legacyUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv", "boyfriendtv.com", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("1426460", result.InlineVideoMetadata?.Code);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_RetriesOn429TooManyRequests()
+    {
+        const string videoUrl = "https://www.boyfriend.tv/videos/1426460/selector/";
+        var attempts = 0;
+
+        using var harness = new FakeDownloaderHost();
+        harness.MapResponse(videoUrl, _ =>
+        {
+            attempts++;
+            if (attempts == 1)
+            {
+                var rateLimited = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests);
+                rateLimited.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMilliseconds(10));
+                return rateLimited;
+            }
+
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(RealisticPageHtml)
+            };
+        });
+        harness.MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(harness.Services);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                videoUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(2, attempts);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_UsesCookiePastedInDownloadsPageLogin_SavedUnderLegacyDomain()
+    {
+        // Mirrors the real saved entry: site "https://www.boyfriendtv.com/", queued URL on the legacy domain.
+        const string legacyUrl = "https://www.boyfriendtv.com/videos/1426460/selector/";
+        string? observedPageCookie = null;
+
+        using var harness = new FakeDownloaderHost();
+        harness.MapResponse(CanonicalVideoPageUrl, req =>
+        {
+            observedPageCookie = req.Headers.TryGetValues("Cookie", out var vals) ? string.Join("; ", vals) : null;
+            var html = observedPageCookie?.Contains("PHPSESSID=browser_sess", StringComparison.Ordinal) == true
+                ? RealisticPageHtml
+                : "<html><body><div class=\"rta-section\">Adults only</div></body></html>";
+            return new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(html) };
+        });
+        harness.MapBytes(Stream1080Url, [0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70], "video/mp4");
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(harness.HttpClients);
+        services.AddSingleton<Cove.Plugins.IDownloaderSiteLoginProvider>(new HostMatchingLoginProvider(
+            new Cove.Plugins.DownloaderSiteLogin("https://www.boyfriendtv.com/", "kari", "Cookie: PHPSESSID=browser_sess; kt_member=abc")));
+        using var provider = services.BuildServiceProvider();
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(provider);
+
+        var result = await extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                legacyUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv", "boyfriendtv.com", "cdn.boyfriendtv.com"])),
+            harness,
+            CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Contains("PHPSESSID=browser_sess", observedPageCookie);
+        Assert.Contains("kt_member=abc", observedPageCookie);
+        Assert.DoesNotContain("Cookie:", observedPageCookie);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_PasswordLoginBlockedByCloudflare_ExplainsCookiePasteAndCachesFailure()
+    {
+        const string loginUrl = "https://www.boyfriend.tv/login/";
+        var loginAttempts = 0;
+
+        using var harness = new FakeDownloaderHost();
+        harness.MapResponse(loginUrl, _ =>
+        {
+            loginAttempts++;
+            var resp = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.Forbidden)
+            {
+                Content = new StringContent("<html><head><title>Just a moment...</title></head><body></body></html>")
+            };
+            resp.Headers.Add("Cf-Mitigated", "challenge");
+            return resp;
+        });
+        harness.MapHtml(CanonicalVideoPageUrl, RealisticPageHtml);
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(harness.HttpClients);
+        services.AddSingleton<Cove.Plugins.IDownloaderSiteLoginProvider>(new HostMatchingLoginProvider(
+            new Cove.Plugins.DownloaderSiteLogin("https://www.boyfriendtv.com/", "kari", "plain-password-123")));
+        using var provider = services.BuildServiceProvider();
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(provider);
+
+        DownloaderRequest Request() => new(
+            BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+            SampleVideoPageUrl,
+            DownloaderEntity.Video,
+            new DownloaderPermissions(["boyfriend.tv", "boyfriendtv.com"]));
+
+        var first = await Assert.ThrowsAsync<InvalidOperationException>(() => extension.DownloadAsync(Request(), harness, CancellationToken.None));
+        var second = await Assert.ThrowsAsync<InvalidOperationException>(() => extension.DownloadAsync(Request(), harness, CancellationToken.None));
+
+        Assert.Contains("Cloudflare", first.Message);
+        Assert.Contains("Password field", first.Message);
+        Assert.Equal(first.Message, second.Message);
+        Assert.Equal(1, loginAttempts);
+    }
+
+    [Fact]
+    public async Task DownloadAsync_PasswordLoginWithoutNewSessionCookie_FailsInsteadOfFalseSuccess()
+    {
+        const string loginUrl = "https://www.boyfriend.tv/login/";
+
+        using var harness = new FakeDownloaderHost();
+        harness.MapResponse(loginUrl, req => new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(req.Method == HttpMethod.Get
+                ? """<form action="/login/" method="post"><input type="text" name="username" /><input type="password" name="pass" /></form>"""
+                : "<html>try again</html>")
+        });
+        harness.MapHtml(CanonicalVideoPageUrl, RealisticPageHtml);
+
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(harness.HttpClients);
+        services.AddSingleton<Cove.Plugins.IDownloaderSiteLoginProvider>(
+            new StubLoginProvider(new Cove.Plugins.DownloaderSiteLogin("boyfriend.tv", "kari", "wrong-password")));
+        using var provider = services.BuildServiceProvider();
+
+        var extension = new BoyfriendtvDownloaderExtension();
+        await extension.InitializeAsync(provider);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => extension.DownloadAsync(
+            new DownloaderRequest(
+                BoyfriendtvDownloaderExtension.PrimaryDownloaderId,
+                CanonicalVideoPageUrl,
+                DownloaderEntity.Video,
+                new DownloaderPermissions(["boyfriend.tv"])),
+            harness,
+            CancellationToken.None));
+
+        Assert.Contains("login failed", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("PHPSESSID=abc123", true, "PHPSESSID=abc123")]
+    [InlineData("Cookie: PHPSESSID=abc; kt_member=x", true, "PHPSESSID=abc; kt_member=x")]
+    [InlineData("PHPSESSID=abc; kt_member=x;", true, "PHPSESSID=abc; kt_member=x")]
+    [InlineData("hunter2", false, "")]
+    [InlineData("my pass=word", false, "")]
+    [InlineData("", false, "")]
+    public void TryParseCookieHeader_DetectsPastedCookies(string input, bool expected, string expectedCookie)
+    {
+        // The shared helper is compiled into both BoyfriendTV assemblies, so resolve it from the downloader's.
+        var helper = typeof(BoyfriendtvDownloaderExtension).Assembly.GetType("KariDownloads.Shared.BoyfriendtvAuthHelper", throwOnError: true)!;
+        var method = helper.GetMethod("TryParseCookieHeader", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)!;
+        object?[] args = [input, null];
+        var ok = (bool)method.Invoke(null, args)!;
+        Assert.Equal(expected, ok);
+        Assert.Equal(expectedCookie, (string)args[1]!);
+    }
+
+    [Fact]
+    public void ExtractVideoPerformersAndTags_IgnoresSidebarModelTilesAndSeeMoreLinks()
+    {
+        // Mirrors live boyfriend.tv markup: the video's own model-card / btn-tag links, plus a
+        // site-wide "popular models" sidebar whose tiles carry stat counters.
+        const string html = """
+            <a class="model-card" href="/pornstars/jason-crew-79/" title="AKA: "><img src="x.jpg" alt="Photo"> Jason Crew </a>
+            <a class="btn-xs btn-tag" href="/tags/anal/" title="anal">anal</a>
+            <a href="https://www.boyfriend.tv/tags/" class="tKey">Tags</a>
+            <a href="/tags/creators/">&gt;&gt;&gt; See more &gt;&gt;&gt;</a>
+            <a class="mtile-x7__inner" href="/pornstars/kyle-ross-1616/" title="Kyle Ross">
+              <span class="username-wrapper">Kyle Ross</span> 193 40 6.5k 214
+            </a>
+            """;
+
+        var helper = typeof(BoyfriendtvDownloaderExtension).Assembly.GetType("KariDownloads.Shared.BoyfriendtvAuthHelper", throwOnError: true)!;
+        var method = helper.GetMethod("ExtractVideoPerformersAndTags")!;
+        var result = ((List<string> Performers, List<string> Tags))method.Invoke(null,
+            [html, new[] { "Jason Crew" }, new[] { "Anal" }, (Func<string, string>)(s => KariDownloads.Shared.DownloaderUtilities.CleanHtmlFragment(s))])!;
+
+        Assert.Equal(["Jason Crew"], result.Performers);
+        Assert.Equal(["Anal"], result.Tags);
     }
 
     private sealed class StubLoginProvider(Cove.Plugins.DownloaderSiteLogin login) : Cove.Plugins.IDownloaderSiteLoginProvider
     {
         public Cove.Plugins.DownloaderSiteLogin? FindForUrl(string url) => login;
+    }
+
+    /// <summary>Matches by host like Cove does, so a login saved for one domain does not match the other.</summary>
+    private sealed class HostMatchingLoginProvider(Cove.Plugins.DownloaderSiteLogin login) : Cove.Plugins.IDownloaderSiteLoginProvider
+    {
+        public Cove.Plugins.DownloaderSiteLogin? FindForUrl(string url)
+        {
+            static string Host(string value) => (Uri.TryCreate(value, UriKind.Absolute, out var u) ? u.Host : value)
+                .ToLowerInvariant().Replace("www.", string.Empty);
+            return Host(url) == Host(login.Site) ? login : null;
+        }
     }
 }
