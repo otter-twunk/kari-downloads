@@ -26,8 +26,9 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
         _clients = services.GetService<IHttpClientFactory>();
         return Task.CompletedTask;
     }
-    private string Executable => string.IsNullOrWhiteSpace(_configuration?["ytDlpPath"]) ? "yt-dlp" : _configuration["ytDlpPath"]!;
+    private string Executable => YtDlpLocator.Resolve(_configuration, Environment.GetEnvironmentVariable("COVE_HOME"), typeof(XcomDownloaderExtension).Assembly.Location);
     private bool PhotoFallback => bool.TryParse(_configuration?["enablePublicPhotoFallback"], out var enabled) && enabled;
+    private string? CookiesFile => _configuration?["cookiesFile"];
     public static bool IsSupportedUrl(string? url) => XcomUrlParser.TryParse(url, out _);
     public IReadOnlyList<DownloaderDescriptor> GetDownloaders()
     {
@@ -42,9 +43,10 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
     public async Task<IReadOnlyList<DownloaderUrlMatch>> MatchAllAsync(string url, CancellationToken ct)
     {
         if (!XcomUrlParser.TryParse(url, out var status)) return [];
+        string? failure = null;
         try
         {
-            var media = await _resolver.ResolveAsync(status, Executable, ct);
+            var media = await _resolver.ResolveAsync(status, Executable, ct, CookiesFile);
             if (status.MediaId != null) media = media.Where(m => m.Id == status.MediaId).ToArray();
             if (media.Count > 0)
                 return media.Select(m => new DownloaderUrlMatch(PrimaryDownloaderId,
@@ -54,7 +56,7 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
                     Label: m.Title, SourceUrl: status.CanonicalUrl)).ToArray();
             string urlFor(XcomMedia m) => status.MediaId == null ? status.CanonicalUrl : status.CanonicalUrl + "#cove-media=" + m.Id;
         }
-        catch (InvalidOperationException) { /* Retain a match so DownloadAsync can surface an actionable failure. */ }
+        catch (InvalidOperationException ex) { failure = ex.Message; }
         if (PhotoFallback && _clients != null && status.MediaId == null)
         {
             try
@@ -64,9 +66,9 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
                 return [new(photos.Urls.Count == 1 ? ImageDownloaderId : GalleryDownloaderId,
                     status.CanonicalUrl, Label: photos.Title, SourceUrl: status.CanonicalUrl)];
             }
-            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException) { }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException) { failure = ex.Message; }
         }
-        return [new(PrimaryDownloaderId, status.CanonicalUrl + (status.MediaId == null ? "" : "#cove-media=" + status.MediaId), Label: "X / Twitter media")];
+        return [new(PrimaryDownloaderId, status.CanonicalUrl + (status.MediaId == null ? "" : "#cove-media=" + status.MediaId), Label: failure ?? "No supported X media found")];
     }
 
     public async Task<DownloaderResult?> DownloadAsync(DownloaderRequest request, IDownloaderHost host, CancellationToken ct)
@@ -111,7 +113,7 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
                     InlineImageMetadata: photos.Urls.Count == 1 ? new ScrapedImageDto { Title = photos.Title, Urls = [status.CanonicalUrl] } : null,
                     InlineGalleryMetadata: photos.Urls.Count > 1 ? new ScrapedGalleryDto { Title = photos.Title, Urls = [status.CanonicalUrl], StudioName = "X / Twitter" } : null);
             }
-            var media = await _resolver.ResolveAsync(status, Executable, ct);
+            var media = await _resolver.ResolveAsync(status, Executable, ct, CookiesFile);
             var selected = status.MediaId == null ? media.FirstOrDefault() : media.FirstOrDefault(m => m.Id == status.MediaId);
             if (selected == null) throw new InvalidOperationException("No downloadable progressive MP4 found for this status. Photo posts require the public photo fallback.");
             IEnumerable<XcomFormat> formats = selected.Formats;
@@ -180,6 +182,8 @@ public sealed class XcomDownloaderExtension : CoveExtensionBase, IDownloaderProv
         using var response = await client.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException("This post is not publicly accessible.");
         var html = await response.Content.ReadAsStringAsync(ct);
+        if (html.Contains("TweetTombstone", StringComparison.Ordinal) || html.Contains("BlurredMediaTombstone", StringComparison.Ordinal))
+            throw new InvalidOperationException("This post is restricted or login-gated on X; a public preview is not downloadable post media.");
         var urls = new List<string>();
         foreach (Match tag in Regex.Matches(html, @"<meta\b[^>]*>", RegexOptions.IgnoreCase))
         {

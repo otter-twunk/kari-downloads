@@ -13,6 +13,10 @@ namespace BatchDownloader;
 
 public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExtension, IApiExtension, IStatefulExtension
 {
+    // Cove sorts by display name, placing its generic Web page/Text provider before X video.
+    public static Cove.Core.DTOs.DownloaderMatchDto? SelectPreferredMatch(IReadOnlyList<Cove.Core.DTOs.DownloaderMatchDto> matches)
+        => matches.FirstOrDefault(m => !string.Equals(m.SupportedEntity, "Text", StringComparison.OrdinalIgnoreCase))
+            ?? matches.FirstOrDefault();
     private static readonly Regex UrlExtractRegex = new(@"https?://[^\s<>'""{}|\\^`\]\)]+", RegexOptions.Compiled);
     private readonly BatchDownloadQueueService _queueService = new();
 
@@ -60,7 +64,7 @@ public sealed partial class BatchDownloaderExtension : CoveExtensionBase, IUIExt
                 try
                 {
                     var urlMatches = await downloaderService.MatchUrlAsync(url, ct);
-                    var best = urlMatches.FirstOrDefault();
+                    var best = SelectPreferredMatch(urlMatches);
                     results[index] = new
                     {
                         url,

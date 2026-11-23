@@ -68,12 +68,30 @@ public sealed record XcomMedia(string Id, string Title, string? Details, string?
 
 public sealed class YtDlpResolver(IXcomProcessRunner runner)
 {
-    public async Task<IReadOnlyList<XcomMedia>> ResolveAsync(XStatusRef status, string executable, CancellationToken ct)
+    public async Task<IReadOnlyList<XcomMedia>> ResolveAsync(XStatusRef status, string executable, CancellationToken ct, string? cookiesFile = null)
     {
-        var output = await runner.RunAsync(executable,
-            ["--ignore-config", "--no-cookies", "--no-cookies-from-browser", "--no-warnings",
-             "--skip-download", "--dump-single-json", "--socket-timeout", "20", "--retries", "1",
-             "--use-extractors", "twitter.*", "--", status.CanonicalUrl], ct);
+        string? temporaryCookies = null;
+        ResolverOutput output;
+        try
+        {
+            List<string> arguments = ["--ignore-config", "--no-cookies-from-browser", "--no-warnings",
+                "--skip-download", "--dump-single-json", "--socket-timeout", "20", "--retries", "1", "--use-extractors", "twitter.*"];
+            if (!string.IsNullOrWhiteSpace(cookiesFile))
+            {
+                if (!File.Exists(cookiesFile)) throw new InvalidOperationException("The configured X cookies file is unavailable; choose an existing Netscape-format cookies export.");
+                // yt-dlp updates its cookie jar on exit; use a private temporary copy to preserve the user's export.
+                temporaryCookies = Path.Combine(Path.GetTempPath(), "xcom-cookies-" + Guid.NewGuid().ToString("N") + ".txt");
+                File.Copy(cookiesFile, temporaryCookies);
+                arguments.AddRange(["--cookies", temporaryCookies]);
+            }
+            else arguments.Add("--no-cookies");
+            arguments.AddRange(["--", status.CanonicalUrl]);
+            output = await runner.RunAsync(executable, arguments, ct);
+        }
+        finally
+        {
+            if (temporaryCookies != null) File.Delete(temporaryCookies);
+        }
         if (output.ExitCode != 0)
         {
             // Never echo raw stderr: upstream messages can contain signed URLs, cookies or tokens.
@@ -81,7 +99,7 @@ public sealed class YtDlpResolver(IXcomProcessRunner runner)
             throw new InvalidOperationException(error.Contains("429") || error.Contains("rate limit")
                 ? "X rate limit reached; retry later."
                 : error.Contains("no video") || error.Contains("no formats")
-                    ? "No downloadable video found for this status."
+                    ? "No downloadable video found. The post may contain only photos or require an X login; configure an authorized X cookies file for login-gated media."
                     : error.Contains("login") || error.Contains("private") || error.Contains("protected") || error.Contains("not available") || error.Contains("404")
                         ? "This post is not publicly accessible (unavailable, deleted or login required)."
                         : "yt-dlp could not resolve this status; check network access and update yt-dlp.");

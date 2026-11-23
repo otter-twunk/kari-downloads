@@ -1,7 +1,7 @@
 {
   "id": "karinauts.downloaders.xcom",
   "name": "X / Twitter Downloader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Resolves public X/Twitter videos with yt-dlp and downloads progressive MP4s, with an opt-in public photo/gallery fallback.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
@@ -55,6 +55,12 @@
     }
   ],
   "settings": [
+    {
+      "type": "STRING",
+      "name": "cookiesFile",
+      "displayName": "X cookies export file (optional)",
+      "description": "Local Netscape-format cookies export for your authorized X session. Used only when explicitly configured; no browser extraction."
+    },
     {
       "type": "STRING",
       "description": "Executable path; defaults to yt-dlp on PATH. No shell arguments.",

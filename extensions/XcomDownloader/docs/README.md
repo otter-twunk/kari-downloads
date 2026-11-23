@@ -1,12 +1,15 @@
 # X / Twitter Downloader
 
 `karinauts.downloaders.xcom` requires Cove 1.8.0 or later. Install the local
-`artifacts/packages/karinauts.downloaders.xcom-0.1.1.zip` through Cove's Settings →
+`artifacts/packages/karinauts.downloaders.xcom-0.1.2.zip` through Cove's Settings →
 Extensions → Install from File. This package contains the extension, not yt-dlp.
 
 Install [yt-dlp](https://github.com/yt-dlp/yt-dlp#installation) separately on the
 Cove host. Set the extension's `ytDlpPath` to the executable's full path, or make
-`yt-dlp` available on the Cove process's PATH. Restarting Cove may be needed after
+`yt-dlp` available on the Cove process's PATH. Version 0.1.2 also discovers existing
+native tools under `<COVE_HOME>/tools`, `<COVE_HOME>/yt-dlp`, and the sibling
+`tools` directory used by this host's community downloader. Explicit settings take
+precedence. Restarting Cove may be needed after
 changing the system PATH. Do not put shell commands or arguments in this setting.
 
 Paste `https://x.com/<handle>/status/<id>` or its `twitter.com` equivalent into
@@ -56,8 +59,14 @@ exposed image where present.
 - Login, protected, deleted or unavailable post: resolution fails cleanly.
 - No supported format: this version requires a progressive MP4 or exposed public photos.
 
-User yt-dlp configuration, browser cookies and cookie files are disabled. No login
-credentials are collected or forwarded. Only yt-dlp's Twitter extractors are
+User yt-dlp configuration and automatic browser cookie extraction are disabled.
+Cookie files are disabled unless `cookiesFile` explicitly names a user-supplied
+Netscape-format X cookies export. Use an authorized session that can access the
+post. The export is copied temporarily for yt-dlp, preserving the original, and
+the temporary copy is deleted after resolution, including failures/cancellation.
+Cookies and raw tool output are never logged. Without a configured export,
+login-gated posts cannot resolve. Restricted/blurred previews are never treated
+as photo downloads. Only yt-dlp's Twitter extractors are
 enabled, so linked external sites are not followed into other downloaders. Raw
 stderr is classified into safe errors instead of logged, to avoid exposing signed
 URLs or credentials. Process output is bounded and resolution times out after two

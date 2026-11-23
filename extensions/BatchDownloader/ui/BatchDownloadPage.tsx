@@ -260,7 +260,7 @@ export function BatchDownloadPage() {
 
           const matches = await res.json();
           if (Array.isArray(matches) && matches.length > 0) {
-            const matched = matches[0];
+            const matched = matches.find((match) => match.supportedEntity?.toLowerCase() !== "text") ?? matches[0];
             const detected = matched.supportedEntity || "Video";
             const normalizedUrl = matched.normalizedUrl || item.rawUrl;
             const targetEntity = item.manualEntityOverride

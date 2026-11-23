@@ -175,7 +175,7 @@ public sealed class BatchDownloadQueueService
                     if (string.IsNullOrWhiteSpace(downloaderId))
                     {
                         var matches = await downloaderService.MatchUrlAsync(cleanedUrl, ct);
-                        var best = matches.FirstOrDefault();
+                        var best = BatchDownloaderExtension.SelectPreferredMatch(matches);
                         if (best == null)
                         {
                             skipByIdx[idx] = new { url = cleanedUrl, reason = "No compatible downloader matched this URL." };
@@ -251,7 +251,7 @@ public sealed class BatchDownloadQueueService
                     try
                     {
                         var matches = await downloaderService.MatchUrlAsync(url, ct);
-                        matchedByIndex[index] = matches.FirstOrDefault();
+                        matchedByIndex[index] = BatchDownloaderExtension.SelectPreferredMatch(matches);
                     }
                     finally
                     {

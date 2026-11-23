@@ -10,6 +10,15 @@ namespace KariDownloads.Tests;
 
 public sealed class BatchDownloaderTests
 {
+    [Fact]
+    public void SelectPreferredMatch_PrefersMediaOverAlphabeticallyFirstWebPage()
+    {
+        var page = new DownloaderMatchDto("builtin.web-text-page/text", "Web page", "Text", "https://x.com/test/status/123", Label: null, QualityOptions: [], SourceUrl: null);
+        var video = new DownloaderMatchDto("karinauts.downloaders.xcom.video", "X / Twitter video", "Video", page.NormalizedUrl, Label: null, QualityOptions: [], SourceUrl: null);
+        Assert.Same(video, BatchDownloaderExtension.SelectPreferredMatch([page, video]));
+        Assert.Same(page, BatchDownloaderExtension.SelectPreferredMatch([page]));
+        Assert.Null(BatchDownloaderExtension.SelectPreferredMatch([]));
+    }
     private static string GetManifestPath()
     {
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "extensions", "BatchDownloader", "extension.json"));
@@ -55,7 +64,7 @@ public sealed class BatchDownloaderTests
 
         Assert.Equal("karinauts.tools.batch-downloader", root.GetProperty("id").GetString());
         Assert.Equal("Batch URL Downloader", root.GetProperty("name").GetString());
-        Assert.Equal("0.1.4", root.GetProperty("version").GetString());
+        Assert.Equal("0.1.5", root.GetProperty("version").GetString());
         Assert.Equal("BatchDownloader.dll", root.GetProperty("entryDll").GetString());
         Assert.Equal("dist/bundle.js", root.GetProperty("jsBundle").GetString());
         Assert.Equal("dist/bundle.css", root.GetProperty("cssBundle").GetString());

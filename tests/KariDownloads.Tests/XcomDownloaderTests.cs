@@ -10,7 +10,65 @@ namespace KariDownloads.Tests;
 
 public sealed class XcomDownloaderTests
 {
+    [Fact]
+    public void FindsExistingNativeToolThroughShadowLoadedAssembly()
+    {
+        var root = Directory.CreateTempSubdirectory("xcom-locator-test-").FullName;
+        try
+        {
+            var instance = Directory.CreateDirectory(Path.Combine(root, "instance")).FullName;
+            File.WriteAllText(Path.Combine(instance, "cove-config.json"), "{}");
+            var tools = Directory.CreateDirectory(Path.Combine(root, "tools")).FullName;
+            var executable = Path.Combine(tools, OperatingSystem.IsWindows() ? "yt-dlp.exe" : "yt-dlp");
+            File.WriteAllText(executable, "fixture");
+            var loadedAssembly = Path.Combine(instance, "extensions", ".load-cache", "xcom", "123", "XcomDownloader.dll");
+            Assert.Equal(executable, YtDlpLocator.Resolve(null, null, loadedAssembly));
+            Assert.Equal(executable, YtDlpLocator.Resolve(null, instance, null));
+            var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?> { ["ytDlpPath"] = "custom-yt-dlp" }).Build();
+            Assert.Equal("custom-yt-dlp", YtDlpLocator.Resolve(config, instance, loadedAssembly));
+        }
+        finally { Directory.Delete(root, true); }
+    }
     private const string Page = "https://x.com/test/status/123456789";
+    [Fact]
+    public async Task ExplicitCookieExportUsesTemporaryCopyAndPreservesOriginal()
+    {
+        var path = Path.GetTempFileName();
+        try
+        {
+            await File.WriteAllTextAsync(path, "# Netscape HTTP Cookie File\n# fixture only\n");
+            var original = await File.ReadAllTextAsync(path);
+            var runner = new Runner();
+            Assert.True(XcomUrlParser.TryParse(Page, out var status));
+            await new YtDlpResolver(runner).ResolveAsync(status, "yt-dlp", default, path);
+            Assert.Equal(original, await File.ReadAllTextAsync(path));
+            var arguments = runner.Arguments!.ToList();
+            Assert.DoesNotContain("--no-cookies", arguments);
+            var tempPath = arguments[arguments.IndexOf("--cookies") + 1];
+            Assert.NotEqual(path, tempPath);
+            Assert.False(File.Exists(tempPath));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task RestrictedPageNeverImportsPreviewImage()
+    {
+        using var host = new FakeDownloaderHost().MapHtml(Page,
+            "<meta property='og:image' content='https://pbs.twimg.com/media/preview.jpg'><script>BlurredMediaTombstone</script>");
+        using var services = new ServiceCollection().AddSingleton(host.HttpClients)
+            .AddSingleton<IConfiguration>(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+                { ["enablePublicPhotoFallback"] = "true" }).Build()).BuildServiceProvider();
+        var extension = new XcomDownloaderExtension(new Runner { Output = new(0, "{}", "") });
+        await extension.InitializeAsync(services);
+        var match = await extension.MatchAsync(Page, default);
+        Assert.NotNull(match);
+        Assert.Equal(XcomDownloaderExtension.PrimaryDownloaderId, match.DownloaderId);
+        Assert.Contains("login-gated", match.Label);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => extension.DownloadAsync(
+            new(XcomDownloaderExtension.ImageDownloaderId, Page, DownloaderEntity.Image, new DownloaderPermissions()), host, default));
+        Assert.Empty(Directory.GetFileSystemEntries(host.TempDirectory));
+    }
     private const string Low = "https://video.twimg.com/test/low.mp4";
     private const string High = "https://video.twimg.com/test/high.mp4";
     private static object Video(string id = "111") => new
