@@ -1,7 +1,7 @@
 {
   "id": "karinauts.downloaders.boyfriendtv",
   "name": "BoyfriendTV Downloader",
-  "version": "0.1.3",
+  "version": "0.1.6",
   "description": "Downloads video media and inline metadata from boyfriend.tv and boyfriendtv.com.",
   "author": "Kari",
   "url": "https://github.com/otter-twunk/kari-downloads",
@@ -45,7 +45,19 @@
       "name": "cookie",
       "type": "STRING",
       "displayName": "Cookie Header",
-      "description": "Optional Cookie header value from your browser if BoyfriendTV login is blocked by a Cloudflare or age-verification challenge."
+      "description": "Optional Cookie header from a signed-in, age-verified boyfriend.tv browser session. Needed because BoyfriendTV login is behind a Cloudflare challenge; you can instead paste it into the Password field of the BoyfriendTV login on the Downloads page."
+    },
+    {
+      "name": "userAgent",
+      "type": "STRING",
+      "displayName": "User-Agent Header",
+      "description": "Optional browser User-Agent matching the session that generated your Cookie Header (Cloudflare cf_clearance cookies are bound to the originating User-Agent)."
+    },
+    {
+      "name": "ffmpegPath",
+      "type": "STRING",
+      "displayName": "FFmpeg Path",
+      "description": "Optional full path to ffmpeg. Leave blank to use Cove's bundled FFmpeg (its configured FFmpeg path), then ffmpeg on PATH."
     }
   ]
 }

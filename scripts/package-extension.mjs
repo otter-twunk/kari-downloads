@@ -95,10 +95,23 @@ for (const entry of entries) {
   const zipPath = path.join(packagesDir, zipName);
   fs.rmSync(zipPath, { force: true });
 
-  execFileSync("zip", ["-r", "-q", zipPath, "."], {
-    cwd: publishDir,
-    stdio: "inherit"
-  });
+  createZip(zipPath, publishDir);
 
   console.log(`Packaged and verified ${zipPath}`);
+}
+
+// Uses Info-ZIP `zip` where available; on Windows (no `zip` by default) falls back to the
+// bundled bsdtar (System32\tar.exe), which writes standard .zip archives with `-a`.
+function createZip(zipPath, sourceDir) {
+  try {
+    execFileSync("zip", ["-r", "-q", zipPath, "."], { cwd: sourceDir, stdio: "inherit" });
+    return;
+  } catch (error) {
+    if (error?.code !== "ENOENT" || process.platform !== "win32") throw error;
+  }
+
+  const systemTar = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  // Pass top-level names explicitly so entries match Info-ZIP layout (no "./" prefix).
+  const entries = fs.readdirSync(sourceDir);
+  execFileSync(systemTar, ["-a", "-c", "-f", zipPath, ...entries], { cwd: sourceDir, stdio: "inherit" });
 }

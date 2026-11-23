@@ -6,6 +6,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="KariDownloads.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Compile Include="..\Shared\DownloaderUtilities.cs" Link="Shared\DownloaderUtilities.cs" />
     <Compile Include="..\Shared\ScraperUtilities.cs" Link="Shared\ScraperUtilities.cs" />
     <Compile Include="..\Shared\BoyfriendtvAuthHelper.cs" Link="Shared\BoyfriendtvAuthHelper.cs" />
