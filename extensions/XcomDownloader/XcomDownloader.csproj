@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>XcomDownloader</AssemblyName>
+    <RootNamespace>XcomDownloader</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\DownloaderUtilities.cs" Link="Shared\DownloaderUtilities.cs" />
+  </ItemGroup>
+
+</Project>

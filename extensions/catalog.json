@@ -120,6 +120,12 @@
       "id": "karinauts.tools.extension-updater",
       "path": "extensions/ExtensionUpdater",
       "tagPrefix": "extension-updater/"
+    },
+    {
+      "name": "XcomDownloader",
+      "id": "karinauts.downloaders.xcom",
+      "path": "extensions/XcomDownloader",
+      "tagPrefix": "xcom-downloader/"
     }
   ]
 }

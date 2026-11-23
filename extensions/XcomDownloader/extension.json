@@ -1,0 +1,71 @@
+{
+  "id": "karinauts.downloaders.xcom",
+  "name": "X / Twitter Downloader",
+  "version": "0.1.1",
+  "description": "Resolves public X/Twitter videos with yt-dlp and downloads progressive MP4s, with an opt-in public photo/gallery fallback.",
+  "author": "Kari",
+  "url": "https://github.com/otter-twunk/kari-downloads",
+  "categories": [
+    "downloader",
+    "video",
+    "metadata"
+  ],
+  "minCoveVersion": "1.8.0",
+  "entryDll": "XcomDownloader.dll",
+  "dependencies": {},
+  "permissions": {
+    "network": [
+      "x.com",
+      "*.x.com",
+      "twitter.com",
+      "*.twitter.com",
+      "pbs.twimg.com",
+      "video.twimg.com",
+      "api.x.com",
+      "api.twitter.com",
+      "cdn.syndication.twimg.com",
+      "amp.twimg.com"
+    ],
+    "scraperRuntime": [],
+    "downloaderRuntime": [
+      "x.com",
+      "*.x.com",
+      "twitter.com",
+      "*.twitter.com",
+      "pbs.twimg.com",
+      "video.twimg.com",
+      "api.x.com",
+      "api.twitter.com",
+      "cdn.syndication.twimg.com",
+      "amp.twimg.com"
+    ],
+    "process": [
+      "yt-dlp"
+    ]
+  },
+  "externalDependencies": [
+    {
+      "required": true,
+      "description": "Required for video resolution. Install separately and keep updated.",
+      "id": "yt-dlp",
+      "configurationKeys": [
+        "ytDlpPath"
+      ],
+      "name": "yt-dlp"
+    }
+  ],
+  "settings": [
+    {
+      "type": "STRING",
+      "description": "Executable path; defaults to yt-dlp on PATH. No shell arguments.",
+      "displayName": "yt-dlp executable path",
+      "name": "ytDlpPath"
+    },
+    {
+      "type": "BOOLEAN",
+      "description": "Opt-in best-effort public HTML photo metadata extraction. Disabled when unset; no login or private media support.",
+      "displayName": "Enable public photo fallback",
+      "name": "enablePublicPhotoFallback"
+    }
+  ]
+}
